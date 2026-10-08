@@ -2,6 +2,9 @@
 name = "kibela"
 version = "0.1.0"
 edition = "2024"
+description = "Read Kibela notes from the command line"
+repository = "https://github.com/canoypa/kibela-cli"
+homepage = "https://github.com/canoypa/kibela-cli"
 license = "MIT"
 
 [dependencies]
@@ -12,3 +15,8 @@ serde_json = { version = "1.0.151", features = ["preserve_order"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 keyring = "4.2.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
