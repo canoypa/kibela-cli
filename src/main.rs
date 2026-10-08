@@ -1,18 +1,19 @@
 mod api;
 mod comments;
 mod config;
-mod note;
+mod location;
+mod lookup;
 mod store;
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use clap::{Parser, Subcommand, builder::PossibleValuesParser};
-use serde_json::json;
+use clap::{Args, Parser, Subcommand, ValueEnum, builder::PossibleValuesParser};
+use serde_json::{Value, json};
 
 use config::Config;
-use note::NoteRef;
+use location::Location;
 
 #[derive(Parser)]
 #[command(
@@ -58,10 +59,54 @@ const SEARCH_FIELDS: &[&str] = &[
     "author",
     "contentSummaryHtml",
     "contentUpdatedAt",
+    "folders",
+    "groups",
     "path",
     "title",
     "titleHtml",
     "url",
+];
+
+const AUTHOR: (&str, &str) = ("author", "author { account realName }");
+
+const NOTE_EXPANSIONS: &[(&str, &str)] = &[AUTHOR];
+
+const SEARCH_EXPANSIONS: &[(&str, &str)] = &[
+    AUTHOR,
+    ("folders", "folders { fullName fixedPath }"),
+    ("groups", "groups { name }"),
+];
+
+const FOLDER_EXPANSIONS: &[(&str, &str)] = &[
+    ("group", "group { name }"),
+    (
+        "notes",
+        "notes(first: $first) { totalCount nodes { title url } }",
+    ),
+    (
+        "folders",
+        "folders(first: $first) { totalCount nodes { name fixedPath } }",
+    ),
+];
+
+const FOLDER_FIELDS: &[&str] = &[
+    "activeChildrenCount",
+    "aliveNotesCount",
+    "alivePinnedNotesCount",
+    "archivedAt",
+    "canBeManaged",
+    "createdAt",
+    "fixedPath",
+    "folders",
+    "fullName",
+    "group",
+    "id",
+    "lastModifiedAt",
+    "name",
+    "newNotePath",
+    "notes",
+    "path",
+    "updatedAt",
 ];
 
 fn fields_help(fields: &[&str]) -> String {
@@ -114,6 +159,8 @@ enum Command {
             hide_possible_values = true
         )]
         json: Option<Vec<String>>,
+        #[command(flatten)]
+        filters: Filters,
     },
     /// Print all comments and inline comments of a note, with replies, as JSON
     ///
@@ -123,8 +170,8 @@ enum Command {
     /// printed by `kibela get`.
     Comments {
         /// Note number or URL (https://<team>.kibe.la/notes/<number>)
-        #[arg(value_parser = note::parse)]
-        note: NoteRef,
+        #[arg(value_parser = location::note)]
+        note: Location,
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
         team: Option<String>,
@@ -133,8 +180,8 @@ enum Command {
     #[command(after_help = fields_help(NOTE_FIELDS))]
     Get {
         /// Note number or URL (https://<team>.kibe.la/notes/<number>)
-        #[arg(value_parser = note::parse)]
-        note: NoteRef,
+        #[arg(value_parser = location::note)]
+        note: Location,
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
         team: Option<String>,
@@ -148,12 +195,119 @@ enum Command {
         )]
         json: Option<Vec<String>>,
     },
+    /// Print a folder with its notes and subfolders as JSON
+    ///
+    /// Prints {"fullName":...,"notes":{"totalCount":N,"nodes":[...]},"folders":{...}}.
+    /// A subfolder's fixedPath (/folders/<number>) can be passed back to `kibela folder`.
+    /// When a totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(FOLDER_FIELDS))]
+    Folder {
+        /// Folder number, path (/folders/<number>), or URL (https://<team>.kibe.la/folders/<number>)
+        #[arg(value_parser = location::folder)]
+        folder: Location,
+        /// Maximum number of notes and of subfolders
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: fullName,notes,folders]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(FOLDER_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
     /// Manage API tokens
     #[command(subcommand)]
     Token(TokenCommand),
     /// Manage registered teams
     #[command(subcommand)]
     Team(TeamCommand),
+    /// List groups
+    #[command(subcommand)]
+    Group(GroupCommand),
+}
+
+#[derive(Args)]
+struct Filters {
+    /// Order of the results
+    #[arg(long, value_enum, default_value_t = Sort::Relevant)]
+    sort: Sort,
+    /// Only results updated within this period
+    #[arg(long, value_enum)]
+    updated: Option<Updated>,
+    /// Kind of results; repeat for more
+    #[arg(long = "resource", value_enum)]
+    resources: Vec<Resource>,
+    /// Only archived notes
+    #[arg(long)]
+    archived: bool,
+    /// Only co-edited notes
+    #[arg(long)]
+    coediting: bool,
+    /// Only results in this group; repeat for more (see `kibela group list`)
+    #[arg(long = "group", value_name = "NAME")]
+    groups: Vec<String>,
+    /// Only results in this folder (as `kibela folder` takes it); repeat for more
+    #[arg(long = "folder", value_name = "FOLDER", value_parser = location::folder)]
+    folders: Vec<Location>,
+    /// Only results written by this account; repeat for more
+    #[arg(long = "user", value_name = "ACCOUNT")]
+    users: Vec<String>,
+    /// Only results liked by this account; repeat for more
+    #[arg(long = "liker", value_name = "ACCOUNT")]
+    likers: Vec<String>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Sort {
+    Relevant,
+    Recent,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Updated {
+    #[value(name = "within-3-days")]
+    Within3Days,
+    #[value(name = "within-1-week")]
+    Within1Week,
+    #[value(name = "within-1-month")]
+    Within1Month,
+    #[value(name = "within-6-months")]
+    Within6Months,
+    #[value(name = "within-1-year")]
+    Within1Year,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Resource {
+    Note,
+    Comment,
+    Attachment,
+}
+
+fn api_enum(value: impl ValueEnum) -> String {
+    let name = value.to_possible_value().expect("no value is skipped");
+    name.get_name().replace('-', "_").to_uppercase()
+}
+
+#[derive(Subcommand)]
+enum GroupCommand {
+    /// List groups, archived ones included, as JSON; their names go to `search --group`
+    List {
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -189,9 +343,23 @@ fn main() -> ExitCode {
             limit,
             team,
             json,
-        } => search(&query.join(" "), limit, team.as_deref(), json.as_deref()),
+            filters,
+        } => search(
+            &query.join(" "),
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+            &filters,
+        ),
         Command::Get { note, team, json } => get(note, team.as_deref(), json.as_deref()),
         Command::Comments { note, team } => comments(note, team.as_deref()),
+        Command::Folder {
+            folder: target,
+            limit,
+            team,
+            json,
+        } => folder(target, limit, team.as_deref(), json.as_deref()),
+        Command::Group(GroupCommand::List { team }) => group_list(team.as_deref()),
         Command::Token(TokenCommand::Set { team }) => token_set(&team),
         Command::Token(TokenCommand::Delete { team }) => token_delete(&team),
         Command::Team(TeamCommand::List) => team_list(),
@@ -280,15 +448,31 @@ fn output(text: &str) -> Result<(), String> {
     }
 }
 
-fn selection(fields: &[String]) -> String {
+/// The GraphQL selection for `--json` fields; object fields expand to the subfields we return.
+fn selection<S: AsRef<str>>(fields: &[S], expansions: &[(&str, &str)]) -> String {
     let fields: Vec<&str> = fields
         .iter()
-        .map(|field| match field.as_str() {
-            "author" => "author { account realName }",
-            field => field,
+        .map(|field| {
+            let field = field.as_ref();
+            expansions
+                .iter()
+                .find(|(name, _)| *name == field)
+                .map_or(field, |(_, expanded)| expanded)
         })
         .collect();
     fields.join(" ")
+}
+
+fn single_url_team(locations: &[Location]) -> Result<Option<&str>, String> {
+    let mut teams = locations.iter().filter_map(|l| l.team.as_deref());
+    let first = teams.next();
+    match teams.find(|team| Some(*team) != first) {
+        Some(other) => Err(format!(
+            "the URLs point to different teams ({} and {other})",
+            first.unwrap_or_default()
+        )),
+        None => Ok(first),
+    }
 }
 
 fn search(
@@ -296,23 +480,82 @@ fn search(
     limit: u32,
     team_flag: Option<&str>,
     json: Option<&[String]>,
+    filters: &Filters,
 ) -> Result<(), String> {
-    let team = Config::load()?.resolve_team(team_flag, None)?;
+    let url_team = single_url_team(&filters.folders)?;
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
     let client = open_client(&team)?;
-    let fields = json.map_or_else(|| "title url contentSummaryHtml".to_string(), selection);
-    let query = format!(
-        "query($query: String!, $first: Int!) {{ search(query: $query, first: $first) {{ totalCount nodes {{ {fields} }} }} }}"
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({
+        "query": text,
+        "first": limit,
+        "sortBy": api_enum(filters.sort),
+        "isArchived": filters.archived,
+    });
+    if let Some(updated) = filters.updated {
+        variables["updated"] = json!(api_enum(updated));
+    }
+    if !filters.resources.is_empty() {
+        let kinds: Vec<String> = filters.resources.iter().map(|&r| api_enum(r)).collect();
+        variables["resources"] = json!(kinds);
+    }
+    if filters.coediting {
+        variables["coediting"] = json!(true);
+    }
+    if !filters.groups.is_empty() {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        let ids = filters
+            .groups
+            .iter()
+            .map(|name| lookup::group_id(&groups, name))
+            .collect::<Result<Vec<_>, _>>()?;
+        variables["groupIds"] = json!(ids);
+    }
+    if !filters.folders.is_empty() {
+        let mut ids = Vec::new();
+        for folder in &filters.folders {
+            let id = lookup::folder_id(&client, &folder.path).map_err(api_error)?;
+            ids.push(id.ok_or_else(|| format!("folder {} was not found in {team}", folder.path))?);
+        }
+        variables["folderIds"] = json!(ids);
+    }
+    for (accounts, key) in [(&filters.users, "userIds"), (&filters.likers, "likerIds")] {
+        if accounts.is_empty() {
+            continue;
+        }
+        let mut ids = Vec::new();
+        for account in accounts {
+            let id = lookup::user_id(&client, account).map_err(api_error)?;
+            ids.push(id.ok_or_else(|| format!("user {account} was not found in {team}"))?);
+        }
+        variables[key] = json!(ids);
+    }
+
+    let fields = json.map_or_else(
+        || "title url contentSummaryHtml".to_string(),
+        |fields| selection(fields, SEARCH_EXPANSIONS),
     );
-    let data = client
-        .query(&query, json!({ "query": text, "first": limit }))
-        .map_err(|e| describe(e, &team))?;
+    let query = format!(
+        "query($query: String!, $first: Int!, $sortBy: SearchSortKind, $isArchived: Boolean, \
+           $updated: SearchDate, $resources: [SearchResourceKind!], $coediting: Boolean, \
+           $groupIds: [ID!], $folderIds: [ID!], $userIds: [ID!], $likerIds: [ID!]) {{ \
+           search(query: $query, first: $first, sortBy: $sortBy, isArchived: $isArchived, \
+             updated: $updated, resources: $resources, coediting: $coediting, groupIds: $groupIds, \
+             folderIds: $folderIds, userIds: $userIds, likerIds: $likerIds) {{ \
+             totalCount nodes {{ {fields} }} }} }}"
+    );
+    let data = client.query(&query, variables).map_err(api_error)?;
     output(&format!("{}\n", data["search"]))
 }
 
-fn get(note: NoteRef, team_flag: Option<&str>, json: Option<&[String]>) -> Result<(), String> {
+fn get(note: Location, team_flag: Option<&str>, json: Option<&[String]>) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
-    let fields = json.map_or_else(|| "content".to_string(), selection);
+    let fields = json.map_or_else(
+        || "content".to_string(),
+        |fields| selection(fields, NOTE_EXPANSIONS),
+    );
     let query = format!("query($path: String!) {{ noteFromPath(path: $path) {{ {fields} }} }}");
     let not_found = || format!("note {} was not found in {team}", note.path);
     let data = client
@@ -331,7 +574,7 @@ fn get(note: NoteRef, team_flag: Option<&str>, json: Option<&[String]>) -> Resul
     }
 }
 
-fn comments(note: NoteRef, team_flag: Option<&str>) -> Result<(), String> {
+fn comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
     match comments::fetch(&client, &note.path) {
@@ -339,6 +582,60 @@ fn comments(note: NoteRef, team_flag: Option<&str>) -> Result<(), String> {
         Ok(None) => Err(format!("note {} was not found in {team}", note.path)),
         Err(e) => Err(describe(e, &team)),
     }
+}
+
+fn folder(
+    target: Location,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, target.team.as_deref())?;
+    let client = open_client(&team)?;
+    let fields: Vec<&str> = match json {
+        Some(fields) => fields.iter().map(String::as_str).collect(),
+        None => vec!["fullName", "notes", "folders"],
+    };
+    let (query, uses_first) = folder_query(&fields);
+    let variables = if uses_first {
+        json!({ "path": target.path, "first": limit })
+    } else {
+        json!({ "path": target.path })
+    };
+    let not_found = || format!("folder {} was not found in {team}", target.path);
+    let data = client.query(&query, variables).map_err(|e| match e {
+        api::Error::NotFound => not_found(),
+        e => describe(e, &team),
+    })?;
+    let found = &data["folderFromPath"];
+    if found.is_null() {
+        return Err(not_found());
+    }
+    output(&format!("{found}\n"))
+}
+
+/// The folder query for the selected fields, and whether it takes `$first`. GraphQL rejects a
+/// declared variable that the selection does not use.
+fn folder_query(fields: &[&str]) -> (String, bool) {
+    let uses_first = fields.iter().any(|f| matches!(*f, "notes" | "folders"));
+    let first = if uses_first { ", $first: Int!" } else { "" };
+    let query = format!(
+        "query($path: String!{first}) {{ folderFromPath(path: $path) {{ {} }} }}",
+        selection(fields, FOLDER_EXPANSIONS)
+    );
+    (query, uses_first)
+}
+
+fn group_list(team_flag: Option<&str>) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, None)?;
+    let client = open_client(&team)?;
+    let mut groups = lookup::groups(&client).map_err(|e| describe(e, &team))?;
+    if let Some(nodes) = groups["nodes"].as_array_mut() {
+        for node in nodes.iter_mut().filter_map(Value::as_object_mut) {
+            node.shift_remove("id");
+        }
+    }
+    output(&format!("{groups}\n"))
 }
 
 fn token_set(team: &str) -> Result<(), String> {
@@ -406,6 +703,59 @@ fn team_use(team: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn filter_values_name_the_api_enums() {
+        assert_eq!(api_enum(Sort::Relevant), "RELEVANT");
+        assert_eq!(api_enum(Sort::Recent), "RECENT");
+        assert_eq!(api_enum(Updated::Within3Days), "WITHIN_3_DAYS");
+        assert_eq!(api_enum(Updated::Within6Months), "WITHIN_6_MONTHS");
+        assert_eq!(api_enum(Resource::Attachment), "ATTACHMENT");
+    }
+
+    #[test]
+    fn each_command_expands_its_own_object_fields() {
+        assert_eq!(
+            selection(&["title", "folders", "groups"], SEARCH_EXPANSIONS),
+            "title folders { fullName fixedPath } groups { name }"
+        );
+        assert_eq!(
+            selection(&["author", "content"], NOTE_EXPANSIONS),
+            "author { account realName } content"
+        );
+    }
+
+    #[test]
+    fn folder_query_declares_first_only_for_connections() {
+        let (query, uses_first) = folder_query(&["fullName", "notes", "folders"]);
+        assert!(uses_first);
+        assert_eq!(
+            query,
+            "query($path: String!, $first: Int!) { folderFromPath(path: $path) { fullName \
+             notes(first: $first) { totalCount nodes { title url } } \
+             folders(first: $first) { totalCount nodes { name fixedPath } } } }"
+        );
+        let (query, uses_first) = folder_query(&["name", "group"]);
+        assert!(!uses_first);
+        assert_eq!(
+            query,
+            "query($path: String!) { folderFromPath(path: $path) { name group { name } } }"
+        );
+    }
+
+    #[test]
+    fn urls_must_share_a_team() {
+        let at = |team: Option<&str>| Location {
+            team: team.map(String::from),
+            path: "/folders/1".into(),
+        };
+        assert_eq!(single_url_team(&[]), Ok(None));
+        assert_eq!(
+            single_url_team(&[at(None), at(Some("a")), at(Some("a"))]),
+            Ok(Some("a"))
+        );
+        assert!(single_url_team(&[at(Some("a")), at(Some("b"))]).is_err());
+    }
 
     #[test]
     fn utc_dates() {
