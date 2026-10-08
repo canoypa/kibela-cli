@@ -29,20 +29,22 @@ Commands pick the team in this order: `--team` or the team in a note URL, then t
 ## Commands
 
 ```sh
-kibela search <query>... [-L <limit>] [--json <fields>]             # matches with excerpts, as JSON
+kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches with excerpts, as JSON
 kibela get <note> [--json <fields>]                                 # Markdown body of a note
 kibela comments <note>                                              # comments and inline comments, as JSON
 kibela folder <folder> [-L <limit>] [--json <fields>]               # a folder with its notes and subfolders, as JSON
+kibela group list                                                   # groups, as JSON
 kibela token set <team>
 kibela token delete <team>
 kibela team list
 kibela team use <team>
 ```
 
-`<note>` is a note number or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. Commands that call the API accept `--team <team>`. `kibela <command> --help` describes each command's output and lists the fields `--json` accepts.
+`<note>` is a note number or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. Commands that call the API accept `--team <team>`. `search` filters by `--sort`, `--updated`, `--resource`, `--archived`, `--coediting`, `--group`, `--folder`, `--user`, and `--liker`. `kibela <command> --help` describes each command's output and options and lists the fields `--json` accepts.
 
 ```sh
 kibela search design review -L 5
+kibela search release --sort recent --updated within-1-month --group Engineering
 kibela get https://example.kibe.la/notes/123 > note.md
 kibela get 123 --json title,url,author
 kibela comments 123

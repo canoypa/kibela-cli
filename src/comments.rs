@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::api::{Client, Error};
+use crate::api::{Client, Error, next_cursor};
 
 // Replies are nested inside each page of comments, so both page sizes multiply into the
 // cost of one request, which Kibela caps at 10,000.
@@ -107,14 +107,5 @@ fn fetch_remaining_replies(
             return Ok(replies);
         }
         after = next_cursor(&connection["pageInfo"])?;
-    }
-}
-
-fn next_cursor(page_info: &Value) -> Result<Value, Error> {
-    match &page_info["endCursor"] {
-        Value::String(cursor) => Ok(Value::String(cursor.clone())),
-        _ => Err(Error::Other(
-            "the API reported a next page without a cursor".into(),
-        )),
     }
 }

@@ -181,6 +181,15 @@ fn wait_of(extensions: &Value) -> Duration {
     Duration::from_millis(millis)
 }
 
+pub fn next_cursor(page_info: &Value) -> Result<Value, Error> {
+    match &page_info["endCursor"] {
+        Value::String(cursor) => Ok(Value::String(cursor.clone())),
+        _ => Err(Error::Other(
+            "the API reported a next page without a cursor".into(),
+        )),
+    }
+}
+
 fn text_of(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
