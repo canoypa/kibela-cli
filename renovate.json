@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommitTypeAll(chore)",
+    ":maintainLockFilesWeekly",
+    ":configMigration"
+  ],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "パッチ・SHAダイジェスト更新の自動マージ",
+      "matchUpdateTypes": ["patch", "digest"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    },
+    {
+      "description": "release.yml は dist generate が作る。action の版は dist-workspace.toml の github-action-commits で変える",
+      "matchFileNames": [".github/workflows/release.yml"],
+      "enabled": false
+    },
+    {
+      "description": "cargo-dist を上げたら dist generate で release.yml を作り直す",
+      "matchDepNames": ["cargo-dist"],
+      "automerge": false
+    }
+  ]
+}
