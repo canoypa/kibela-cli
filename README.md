@@ -33,6 +33,7 @@ kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches wi
 kibela note view <note> [--json <fields>]                           # Markdown body of a note
 kibela note comments <note>                                         # comments and inline comments, as JSON
 kibela folder view <folder> [-L <limit>] [--json <fields>]          # a folder with its notes and subfolders, as JSON
+kibela group view <group> [-L <limit>] [--json <fields>]            # a group with its top-level folders and notes, as JSON
 kibela group list                                                   # groups, as JSON
 kibela team add <team>
 kibela team remove <team>
@@ -40,7 +41,7 @@ kibela team list
 kibela team use <team>
 ```
 
-`<note>` is a note number, a path (`/notes/<number>`), or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. Commands that call the API accept `--team <team>`. `search` filters by `--sort`, `--updated`, `--resource`, `--archived`, `--coediting`, `--group`, `--folder`, `--user`, and `--liker`. `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.
+`<note>` is a note number, a path (`/notes/<number>`), or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. `<group>` is a group name, number, path (`/groups/<number>`), or URL. Commands that call the API accept `--team <team>`. `search` filters by `--sort`, `--updated`, `--resource`, `--archived`, `--coediting`, `--group`, `--folder`, `--user`, and `--liker`. `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.
 
 ```sh
 kibela search design review -L 5

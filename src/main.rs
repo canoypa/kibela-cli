@@ -109,6 +109,41 @@ const FOLDER_FIELDS: &[&str] = &[
     "updatedAt",
 ];
 
+const GROUP_EXPANSIONS: &[(&str, &str)] = &[
+    (
+        "notes",
+        "notes(first: $first) { totalCount nodes { title url } }",
+    ),
+    // Without parentFolderId the API returns every folder in the group, nested ones included.
+    (
+        "folders",
+        "folders(first: $first, parentFolderId: null) { totalCount nodes { fullName fixedPath } }",
+    ),
+];
+
+const GROUP_FIELDS: &[&str] = &[
+    "allowNoteExternalSharing",
+    "archivedAt",
+    "canBeJoinedBySelf",
+    "canBeManaged",
+    "coverImageKey",
+    "createdAt",
+    "description",
+    "feedUpdatedAt",
+    "folders",
+    "id",
+    "isArchived",
+    "isDefault",
+    "isJoined",
+    "isNotePublicationApprovalRequired",
+    "isPrivate",
+    "isVisibilityChangeable",
+    "name",
+    "notes",
+    "path",
+    "updatedAt",
+];
+
 fn fields_help(fields: &[&str]) -> String {
     let mut help = String::from("JSON FIELDS");
     let mut line = String::new();
@@ -168,7 +203,7 @@ enum Command {
     /// Read folders
     #[command(subcommand)]
     Folder(FolderCommand),
-    /// List groups
+    /// Read groups
     #[command(subcommand)]
     Group(GroupCommand),
     /// Manage teams and their API tokens
@@ -313,7 +348,38 @@ fn api_enum(value: impl ValueEnum) -> String {
 
 #[derive(Subcommand)]
 enum GroupCommand {
-    /// List groups, archived ones included, as JSON; a name or path goes to --group
+    /// Print a group with its top-level folders and its notes as JSON
+    ///
+    /// Prints {"name":...,"description":...,"folders":{"totalCount":N,"nodes":[...]},"notes":{...}}.
+    /// A folder's fixedPath (/folders/<number>) can be passed to `kibela folder view`.
+    /// When a totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(GROUP_FIELDS))]
+    View {
+        /// Group name, number, path (/groups/<number>), or URL (https://<team>.kibe.la/groups/<number>)
+        #[arg(value_parser = location::group)]
+        group: location::Group,
+        /// Maximum number of folders and of notes
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: name,description,folders,notes]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(GROUP_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+    /// List groups, archived ones included, as JSON; a name or path goes to `group view` and --group
     List {
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
@@ -377,6 +443,12 @@ fn main() -> ExitCode {
             team,
             json,
         }) => folder_view(target, limit, team.as_deref(), json.as_deref()),
+        Command::Group(GroupCommand::View {
+            group,
+            limit,
+            team,
+            json,
+        }) => group_view(group, limit, team.as_deref(), json.as_deref()),
         Command::Group(GroupCommand::List { team }) => group_list(team.as_deref()),
         Command::Team(TeamCommand::Add { team }) => team_add(&team),
         Command::Team(TeamCommand::Remove { team }) => team_remove(&team),
@@ -641,7 +713,12 @@ fn folder_view(
         Some(fields) => fields.iter().map(String::as_str).collect(),
         None => vec!["fullName", "notes", "folders"],
     };
-    let (query, uses_first) = folder_query(&fields);
+    let (query, uses_first) = view_query(
+        "$path: String!",
+        "folderFromPath(path: $path)",
+        &fields,
+        FOLDER_EXPANSIONS,
+    );
     let variables = if uses_first {
         json!({ "path": target.path, "first": limit })
     } else {
@@ -659,16 +736,45 @@ fn folder_view(
     output(&format!("{found}\n"))
 }
 
-/// The folder query for the selected fields, and whether it takes `$first`. GraphQL rejects a
-/// declared variable that the selection does not use.
-fn folder_query(fields: &[&str]) -> (String, bool) {
-    let uses_first = fields.iter().any(|f| matches!(*f, "notes" | "folders"));
+/// The query for the selected fields of `root`, and whether it takes `$first`. GraphQL rejects
+/// a declared variable that the selection does not use.
+fn view_query(
+    params: &str,
+    root: &str,
+    fields: &[&str],
+    expansions: &[(&str, &str)],
+) -> (String, bool) {
+    let selection = selection(fields, expansions);
+    let uses_first = selection.contains("$first");
     let first = if uses_first { ", $first: Int!" } else { "" };
-    let query = format!(
-        "query($path: String!{first}) {{ folderFromPath(path: $path) {{ {} }} }}",
-        selection(fields, FOLDER_EXPANSIONS)
-    );
+    let query = format!("query({params}{first}) {{ {root} {{ {selection} }} }}");
     (query, uses_first)
+}
+
+fn group_view(
+    group: location::Group,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, group.team.as_deref())?;
+    let client = open_client(&team)?;
+    let groups = lookup::groups(&client).map_err(|e| describe(e, &team))?;
+    let id = lookup::group_id(&groups, &group.key)?;
+    let fields: Vec<&str> = match json {
+        Some(fields) => fields.iter().map(String::as_str).collect(),
+        None => vec!["name", "description", "folders", "notes"],
+    };
+    let (query, uses_first) = view_query("$id: ID!", "group(id: $id)", &fields, GROUP_EXPANSIONS);
+    let variables = if uses_first {
+        json!({ "id": id, "first": limit })
+    } else {
+        json!({ "id": id })
+    };
+    let data = client
+        .query(&query, variables)
+        .map_err(|e| describe(e, &team))?;
+    output(&format!("{}\n", data["group"]))
 }
 
 fn group_list(team_flag: Option<&str>) -> Result<(), String> {
@@ -775,8 +881,16 @@ mod tests {
     }
 
     #[test]
-    fn folder_query_declares_first_only_for_connections() {
-        let (query, uses_first) = folder_query(&["fullName", "notes", "folders"]);
+    fn view_query_declares_first_only_for_connections() {
+        let folder = |fields: &[&str]| {
+            view_query(
+                "$path: String!",
+                "folderFromPath(path: $path)",
+                fields,
+                FOLDER_EXPANSIONS,
+            )
+        };
+        let (query, uses_first) = folder(&["fullName", "notes", "folders"]);
         assert!(uses_first);
         assert_eq!(
             query,
@@ -784,11 +898,23 @@ mod tests {
              notes(first: $first) { totalCount nodes { title url } } \
              folders(first: $first) { totalCount nodes { name fixedPath } } } }"
         );
-        let (query, uses_first) = folder_query(&["name", "group"]);
+        let (query, uses_first) = folder(&["name", "group"]);
         assert!(!uses_first);
         assert_eq!(
             query,
             "query($path: String!) { folderFromPath(path: $path) { name group { name } } }"
+        );
+    }
+
+    #[test]
+    fn group_folders_are_the_top_level_ones() {
+        let (query, uses_first) =
+            view_query("$id: ID!", "group(id: $id)", &["folders"], GROUP_EXPANSIONS);
+        assert!(uses_first);
+        assert_eq!(
+            query,
+            "query($id: ID!, $first: Int!) { group(id: $id) { \
+             folders(first: $first, parentFolderId: null) { totalCount nodes { fullName fixedPath } } } }"
         );
     }
 
