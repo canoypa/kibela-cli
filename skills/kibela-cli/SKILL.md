@@ -1,6 +1,6 @@
 ---
 name: kibela-cli
-description: kibela is a CLI for reading Kibela notes (`https://<team>.kibe.la/...`). Use when searching Kibela (by group, folder, author, or date as well), reading or saving a note's Markdown body, reading a note's comments and inline comments, or browsing a folder's notes.
+description: kibela is a CLI for reading Kibela notes (`https://<team>.kibe.la/...`). Use when searching Kibela (by group, folder, author, or date as well), reading or saving a note's Markdown body, reading a note's comments and inline comments, listing the notes of a folder or group, finding or browsing folders, or looking up groups and users.
 ---
 
 # kibela-cli

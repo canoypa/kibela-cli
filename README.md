@@ -54,7 +54,11 @@ kibela search release --sort recent --updated within-1-month --group Engineering
 kibela note view https://example.kibe.la/notes/123 > note.md
 kibela note view 123 --json title,url,author
 kibela note comments 123
+kibela note list --group Engineering -L 20
+kibela folder search design
+kibela folder list --group Engineering --root
 kibela folder view https://example.kibe.la/folders/45
+kibela user list --query alice
 ```
 
 ## Output
