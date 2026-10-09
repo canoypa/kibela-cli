@@ -163,6 +163,13 @@ const FOLDER_LIST_FIELDS: &[&str] = &[
     "updatedAt",
 ];
 
+const FOLDER_SEARCH_FIELDS: &[&str] = &["fixedPath", "folder", "group", "name"];
+
+const FOLDER_SEARCH_EXPANSIONS: &[(&str, &str)] = &[
+    ("folder", "folder { fullName fixedPath }"),
+    ("group", "group { name }"),
+];
+
 fn fields_help(fields: &[&str]) -> String {
     let mut help = String::from("JSON FIELDS");
     let mut line = String::new();
@@ -314,6 +321,37 @@ enum NoteCommand {
 
 #[derive(Subcommand)]
 enum FolderCommand {
+    /// Search folders by name; prints matches as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]} with the top matches. A folder's fixedPath goes to
+    /// `kibela folder view`. When totalCount is larger than the number of nodes, raise --limit.
+    /// In name, the full name of the folder, <em class="searchHighlight"> marks the matched words.
+    #[command(after_help = fields_help(FOLDER_SEARCH_FIELDS))]
+    Search {
+        /// Words to search for
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// Maximum number of results
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to search
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: folder,group]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(FOLDER_SEARCH_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
     /// List folders as JSON
     ///
     /// Prints {"totalCount":N,"nodes":[...]}. Lists every folder, nested ones included, unless
@@ -604,6 +642,12 @@ fn main() -> ExitCode {
             team,
             json,
         }) => folder_view(target, limit, team.as_deref(), json.as_deref()),
+        Command::Folder(FolderCommand::Search {
+            query,
+            limit,
+            team,
+            json,
+        }) => folder_search(&query.join(" "), limit, team.as_deref(), json.as_deref()),
         Command::Folder(FolderCommand::List {
             group,
             root,
@@ -956,6 +1000,28 @@ fn note_comments(note: Location, team_flag: Option<&str>) -> Result<(), String> 
         Ok(None) => Err(format!("note {} was not found in {team}", note.path)),
         Err(e) => Err(describe(e, &team)),
     }
+}
+
+fn folder_search(
+    text: &str,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, None)?;
+    let client = open_client(&team)?;
+    let fields = selection(
+        json.unwrap_or(&["folder".into(), "group".into()]),
+        FOLDER_SEARCH_EXPANSIONS,
+    );
+    let query = format!(
+        "query($query: String!, $first: Int!) {{ searchFolder(query: $query, first: $first) {{ \
+           totalCount nodes {{ {fields} }} }} }}"
+    );
+    let data = client
+        .query(&query, json!({ "query": text, "first": limit }))
+        .map_err(|e| describe(e, &team))?;
+    output(&format!("{}\n", data["searchFolder"]))
 }
 
 struct FolderFilters {
