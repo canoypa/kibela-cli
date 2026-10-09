@@ -460,6 +460,12 @@ fn format_utc(time: SystemTime) -> String {
     )
 }
 
+/// Reports what a command did on stderr, keeping stdout for results.
+fn report(message: &str) -> Result<(), String> {
+    let _ = writeln!(io::stderr(), "{message}");
+    Ok(())
+}
+
 fn output(text: &str) -> Result<(), String> {
     let mut stdout = io::stdout().lock();
     match stdout
@@ -597,7 +603,14 @@ fn note_view(
     }
     match json {
         Some(_) => output(&format!("{found}\n")),
-        None => output(found["content"].as_str().unwrap_or_default()),
+        None => {
+            let content = found["content"].as_str().unwrap_or_default();
+            if content.is_empty() || content.ends_with('\n') {
+                output(content)
+            } else {
+                output(&format!("{content}\n"))
+            }
+        }
     }
 }
 
@@ -684,7 +697,7 @@ fn team_add(team: &str) -> Result<(), String> {
         config.save()?;
     }
 
-    output(&format!("Added {team} ({account})\n"))
+    report(&format!("Added {team} ({account})"))
 }
 
 fn team_remove(team: &str) -> Result<(), String> {
@@ -698,17 +711,13 @@ fn team_remove(team: &str) -> Result<(), String> {
         config.default_team = None;
     }
     config.save()?;
-    output(&format!("Removed {team}\n"))
+    report(&format!("Removed {team}"))
 }
 
 fn team_list() -> Result<(), String> {
     let config = Config::load()?;
     if config.teams.is_empty() {
-        let _ = writeln!(
-            io::stderr(),
-            "no team is added. Run `kibela team add <team>`"
-        );
-        return Ok(());
+        return report("no team is added. Run `kibela team add <team>`");
     }
     let mut list = String::new();
     for team in &config.teams {
@@ -731,7 +740,7 @@ fn team_use(team: &str) -> Result<(), String> {
     }
     config.default_team = Some(team.to_string());
     config.save()?;
-    output(&format!("Set {team} as the default team\n"))
+    report(&format!("Set {team} as the default team"))
 }
 
 #[cfg(test)]

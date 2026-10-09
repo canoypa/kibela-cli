@@ -53,7 +53,7 @@ kibela folder view https://example.kibe.la/folders/45
 
 ## Output
 
-Results go to standard output and errors to standard error. The exit code is 0 on success, 1 on failure, and 2 on invalid arguments.
+Results go to standard output; errors and reports of what a command did, such as `team add`, go to standard error. The exit code is 0 on success, 1 on failure, and 2 on invalid arguments.
 
 ## Agent skill
 
