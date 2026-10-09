@@ -144,6 +144,25 @@ const GROUP_FIELDS: &[&str] = &[
     "updatedAt",
 ];
 
+/// The folder fields without its connections, which would multiply `-L` into each folder.
+const FOLDER_LIST_FIELDS: &[&str] = &[
+    "activeChildrenCount",
+    "aliveNotesCount",
+    "alivePinnedNotesCount",
+    "archivedAt",
+    "canBeManaged",
+    "createdAt",
+    "fixedPath",
+    "fullName",
+    "group",
+    "id",
+    "lastModifiedAt",
+    "name",
+    "newNotePath",
+    "path",
+    "updatedAt",
+];
+
 fn fields_help(fields: &[&str]) -> String {
     let mut help = String::from("JSON FIELDS");
     let mut line = String::new();
@@ -295,6 +314,49 @@ enum NoteCommand {
 
 #[derive(Subcommand)]
 enum FolderCommand {
+    /// List folders as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]}. Lists every folder, nested ones included, unless
+    /// --root or --parent narrows it. A folder's fixedPath (/folders/<number>) can be passed to
+    /// `kibela folder view`. When totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(FOLDER_LIST_FIELDS))]
+    List {
+        /// Only folders in this group (as `kibela group view` takes it)
+        #[arg(long, value_name = "GROUP", value_parser = location::group)]
+        group: Option<location::Group>,
+        /// Only top-level folders
+        #[arg(long, conflicts_with = "parent")]
+        root: bool,
+        /// Only the subfolders of this folder (as `kibela folder view` takes it)
+        #[arg(long, value_name = "FOLDER", value_parser = location::folder)]
+        parent: Option<Location>,
+        /// With --group, also list the folders below the ones listed
+        #[arg(long, requires = "group")]
+        with_children: bool,
+        /// Which folders to list by whether they are archived
+        #[arg(long, value_enum, default_value_t = State::Active)]
+        state: State,
+        /// Maximum number of folders
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: fullName,fixedPath]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(FOLDER_LIST_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
     /// Print a folder with its notes and subfolders as JSON
     ///
     /// Prints {"fullName":...,"notes":{"totalCount":N,"nodes":[...]},"folders":{...}}.
@@ -542,6 +604,27 @@ fn main() -> ExitCode {
             team,
             json,
         }) => folder_view(target, limit, team.as_deref(), json.as_deref()),
+        Command::Folder(FolderCommand::List {
+            group,
+            root,
+            parent,
+            with_children,
+            state,
+            limit,
+            team,
+            json,
+        }) => folder_list(
+            FolderFilters {
+                group,
+                root,
+                parent,
+                with_children,
+                state,
+            },
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+        ),
         Command::Group(GroupCommand::View {
             group,
             limit,
@@ -872,6 +955,82 @@ fn note_comments(note: Location, team_flag: Option<&str>) -> Result<(), String> 
         Ok(Some(all)) => output(&format!("{all}\n")),
         Ok(None) => Err(format!("note {} was not found in {team}", note.path)),
         Err(e) => Err(describe(e, &team)),
+    }
+}
+
+struct FolderFilters {
+    group: Option<location::Group>,
+    root: bool,
+    parent: Option<Location>,
+    with_children: bool,
+    state: State,
+}
+
+fn folder_list(
+    filters: FolderFilters,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let url_team = single_url_team([
+        filters.group.as_ref().and_then(|g| g.team.as_deref()),
+        filters.parent.as_ref().and_then(|p| p.team.as_deref()),
+    ])?;
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
+    let client = open_client(&team)?;
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({ "first": limit, "active": filters.state.active() });
+    // Left out, parentFolderId lists every folder; null lists the top-level ones.
+    if filters.root {
+        variables["parentFolderId"] = Value::Null;
+    }
+    if let Some(parent) = &filters.parent {
+        let id = lookup::folder_id(&client, &parent.path).map_err(api_error)?;
+        variables["parentFolderId"] =
+            id.ok_or_else(|| format!("folder {} was not found in {team}", parent.path))?;
+    }
+    if filters.with_children {
+        variables["withChildren"] = json!(true);
+    }
+    if let Some(group) = &filters.group {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        variables["id"] = lookup::group_id(&groups, &group.key)?;
+    }
+
+    let fields = json.map_or_else(
+        || "fullName fixedPath".to_string(),
+        |fields| selection(fields, FOLDER_EXPANSIONS),
+    );
+    let data = client
+        .query(
+            &folder_list_query(filters.group.is_some(), &fields),
+            variables,
+        )
+        .map_err(api_error)?;
+    let folders = match filters.group {
+        Some(_) => &data["group"]["folders"],
+        None => &data["folders"],
+    };
+    output(&format!("{folders}\n"))
+}
+
+/// Only `Group.folders` takes withChildren.
+fn folder_list_query(in_group: bool, fields: &str) -> String {
+    let connection = format!("totalCount nodes {{ {fields} }}");
+    if in_group {
+        format!(
+            "query($id: ID!, $first: Int!, $active: Boolean, $parentFolderId: ID, \
+               $withChildren: Boolean) {{ group(id: $id) {{ folders(first: $first, \
+                 active: $active, parentFolderId: $parentFolderId, withChildren: $withChildren) \
+                 {{ {connection} }} }} }}"
+        )
+    } else {
+        format!(
+            "query($first: Int!, $active: Boolean, $parentFolderId: ID) {{ \
+               folders(first: $first, active: $active, parentFolderId: $parentFolderId) \
+               {{ {connection} }} }}"
+        )
     }
 }
 
