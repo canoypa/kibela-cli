@@ -97,6 +97,34 @@ pub fn group(arg: &str) -> Result<Group, String> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct User {
+    pub team: Option<String>,
+    pub account: String,
+}
+
+pub fn user(arg: &str) -> Result<User, String> {
+    let (team, path) = if arg.starts_with("https://") {
+        match from_url(arg) {
+            Some(location) => (location.team, location.path),
+            None => (None, String::new()),
+        }
+    } else if arg.starts_with('/') {
+        (None, arg.to_string())
+    } else {
+        (None, format!("/@{}", arg.strip_prefix('@').unwrap_or(arg)))
+    };
+    match path.strip_prefix("/@") {
+        Some(account) if !account.is_empty() && !account.contains('/') => Ok(User {
+            team,
+            account: account.to_string(),
+        }),
+        _ => Err("neither an account, a path (/@<account>), nor a user URL \
+             (https://<team>.kibe.la/@<account>)"
+            .to_string()),
+    }
+}
+
 fn is_number(arg: &str) -> bool {
     !arg.is_empty() && arg.bytes().all(|b| b.is_ascii_digit())
 }
@@ -207,6 +235,31 @@ mod tests {
             "https://example.com/groups/6",
         ] {
             assert!(group(arg).is_err(), "{arg}");
+        }
+    }
+
+    #[test]
+    fn user_account_path_and_url() {
+        let user_in = |team: Option<&str>| User {
+            team: team.map(String::from),
+            account: "alice".into(),
+        };
+        for arg in ["alice", "@alice", "/@alice"] {
+            assert_eq!(user(arg), Ok(user_in(None)), "{arg}");
+        }
+        assert_eq!(
+            user("https://example.kibe.la/@alice?tab=notes"),
+            Ok(user_in(Some("example")))
+        );
+        for arg in [
+            "",
+            "@",
+            "/@",
+            "/notes/1",
+            "a/b",
+            "https://example.kibe.la/notes/1",
+        ] {
+            assert!(user(arg).is_err(), "{arg}");
         }
     }
 

@@ -170,6 +170,20 @@ const FOLDER_SEARCH_EXPANSIONS: &[(&str, &str)] = &[
     ("group", "group { name }"),
 ];
 
+const USER_FIELDS: &[&str] = &[
+    "account",
+    "biography",
+    "email",
+    "id",
+    "isOptOutCollabModeStartDialog",
+    "locale",
+    "path",
+    "realName",
+    "role",
+    "shortBio",
+    "url",
+];
+
 fn fields_help(fields: &[&str]) -> String {
     let mut help = String::from("JSON FIELDS");
     let mut line = String::new();
@@ -229,6 +243,9 @@ enum Command {
     /// Read folders
     #[command(subcommand)]
     Folder(FolderCommand),
+    /// Read users
+    #[command(subcommand)]
+    User(UserCommand),
     /// Read groups
     #[command(subcommand)]
     Group(GroupCommand),
@@ -451,12 +468,12 @@ struct Filters {
     /// Only results in this folder (as `kibela folder view` takes it); repeat for more
     #[arg(long = "folder", value_name = "FOLDER", value_parser = location::folder)]
     folders: Vec<Location>,
-    /// Only results written by this account; repeat for more
-    #[arg(long = "user", value_name = "ACCOUNT")]
-    users: Vec<String>,
-    /// Only results liked by this account; repeat for more
-    #[arg(long = "liker", value_name = "ACCOUNT")]
-    likers: Vec<String>,
+    /// Only results written by this user (as `kibela user view` takes it); repeat for more
+    #[arg(long = "user", value_name = "USER", value_parser = location::user)]
+    users: Vec<location::User>,
+    /// Only results liked by this user (as `kibela user view` takes it); repeat for more
+    #[arg(long = "liker", value_name = "USER", value_parser = location::user)]
+    likers: Vec<location::User>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -520,6 +537,74 @@ enum Resource {
 fn api_enum(value: impl ValueEnum) -> String {
     let name = value.to_possible_value().expect("no value is skipped");
     name.get_name().replace('-', "_").to_uppercase()
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Print a user as JSON
+    #[command(after_help = fields_help(USER_FIELDS))]
+    View {
+        /// Account, path (/@<account>), or URL (https://<team>.kibe.la/@<account>)
+        #[arg(value_parser = location::user)]
+        user: location::User,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: account,realName,shortBio,url]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(USER_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+    /// List users as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]}. A user's account goes to `kibela user view` and to
+    /// `search --user`. When totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(USER_FIELDS))]
+    List {
+        /// Only users matching this query
+        #[arg(long)]
+        query: Option<String>,
+        /// Only members of this group (as `kibela group view` takes it)
+        #[arg(long, value_name = "GROUP", value_parser = location::group)]
+        group: Option<location::Group>,
+        /// Only enabled users
+        #[arg(long, conflicts_with = "disabled")]
+        enabled: bool,
+        /// Only disabled users
+        #[arg(long)]
+        disabled: bool,
+        /// Only users who have confirmed their account
+        #[arg(long, conflicts_with = "unconfirmed")]
+        confirmed: bool,
+        /// Only users who have not confirmed their account
+        #[arg(long)]
+        unconfirmed: bool,
+        /// Maximum number of users
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: account,realName]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(USER_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -669,6 +754,30 @@ fn main() -> ExitCode {
             team.as_deref(),
             json.as_deref(),
         ),
+        Command::User(UserCommand::View { user, team, json }) => {
+            user_view(user, team.as_deref(), json.as_deref())
+        }
+        Command::User(UserCommand::List {
+            query,
+            group,
+            enabled,
+            disabled,
+            confirmed,
+            unconfirmed,
+            limit,
+            team,
+            json,
+        }) => user_list(
+            UserFilters {
+                query,
+                group,
+                enabled: either(enabled, disabled),
+                confirmed: either(confirmed, unconfirmed),
+            },
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+        ),
         Command::Group(GroupCommand::View {
             group,
             limit,
@@ -813,7 +922,8 @@ fn search(
 ) -> Result<(), String> {
     let url_team = single_url_team(
         (filters.folders.iter().map(|f| f.team.as_deref()))
-            .chain(filters.groups.iter().map(|g| g.team.as_deref())),
+            .chain(filters.groups.iter().map(|g| g.team.as_deref()))
+            .chain((filters.users.iter().chain(&filters.likers)).map(|u| u.team.as_deref())),
     )?;
     let team = Config::load()?.resolve_team(team_flag, url_team)?;
     let client = open_client(&team)?;
@@ -857,9 +967,9 @@ fn search(
             continue;
         }
         let mut ids = Vec::new();
-        for account in accounts {
-            let id = lookup::user_id(&client, account).map_err(api_error)?;
-            ids.push(id.ok_or_else(|| format!("user {account} was not found in {team}"))?);
+        for user in accounts {
+            let id = lookup::user_id(&client, &user.account).map_err(api_error)?;
+            ids.push(id.ok_or_else(|| format!("user {} was not found in {team}", user.account))?);
         }
         variables[key] = json!(ids);
     }
@@ -1148,6 +1258,80 @@ fn view_query(
     let first = if uses_first { ", $first: Int!" } else { "" };
     let query = format!("query({params}{first}) {{ {root} {{ {selection} }} }}");
     (query, uses_first)
+}
+
+fn user_view(
+    user: location::User,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, user.team.as_deref())?;
+    let client = open_client(&team)?;
+    let fields = json.map_or_else(
+        || "account realName shortBio url".to_string(),
+        |fields| fields.join(" "),
+    );
+    let query =
+        format!("query($account: String!) {{ userFromAccount(account: $account) {{ {fields} }} }}");
+    let not_found = || format!("user {} was not found in {team}", user.account);
+    let data = client
+        .query(&query, json!({ "account": user.account }))
+        .map_err(|e| match e {
+            api::Error::NotFound => not_found(),
+            e => describe(e, &team),
+        })?;
+    let found = &data["userFromAccount"];
+    if found.is_null() {
+        return Err(not_found());
+    }
+    output(&format!("{found}\n"))
+}
+
+/// A pair of opposite flags as the API's Boolean; with neither, null selects both.
+fn either(yes: bool, no: bool) -> Option<bool> {
+    match (yes, no) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    }
+}
+
+struct UserFilters {
+    query: Option<String>,
+    group: Option<location::Group>,
+    enabled: Option<bool>,
+    confirmed: Option<bool>,
+}
+
+fn user_list(
+    filters: UserFilters,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let url_team = filters.group.as_ref().and_then(|g| g.team.as_deref());
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
+    let client = open_client(&team)?;
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({
+        "first": limit,
+        "query": filters.query,
+        "enabled": filters.enabled,
+        "confirmed": filters.confirmed,
+    });
+    if let Some(group) = &filters.group {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        variables["groupId"] = lookup::group_id(&groups, &group.key)?;
+    }
+    let fields = json.map_or_else(|| "account realName".to_string(), |fields| fields.join(" "));
+    let query = format!(
+        "query($first: Int!, $query: String, $groupId: ID, $enabled: Boolean, \
+           $confirmed: Boolean) {{ users(first: $first, query: $query, groupId: $groupId, \
+             enabled: $enabled, confirmed: $confirmed) {{ totalCount nodes {{ {fields} }} }} }}"
+    );
+    let data = client.query(&query, variables).map_err(api_error)?;
+    output(&format!("{}\n", data["users"]))
 }
 
 fn group_view(
