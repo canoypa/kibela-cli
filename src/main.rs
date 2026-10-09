@@ -213,6 +213,51 @@ enum Command {
 
 #[derive(Subcommand)]
 enum NoteCommand {
+    /// List notes as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]}. Without --folder or --group, lists the notes of
+    /// the whole team. When totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(NOTE_FIELDS))]
+    List {
+        /// Only notes in this folder (as `kibela folder view` takes it)
+        #[arg(long, value_name = "FOLDER", value_parser = location::folder, conflicts_with = "group")]
+        folder: Option<Location>,
+        /// Only notes in this group (as `kibela group view` takes it)
+        #[arg(long, value_name = "GROUP", value_parser = location::group)]
+        group: Option<location::Group>,
+        /// With --group, only notes that are in no folder
+        #[arg(long, requires = "group")]
+        not_in_folder: bool,
+        /// Field to order by
+        #[arg(long, value_enum, default_value_t = NoteSort::ContentUpdatedAt)]
+        sort: NoteSort,
+        /// Direction of the order
+        #[arg(long, value_enum, default_value_t = Direction::Desc)]
+        order: Direction,
+        /// Which notes to list by whether they are archived
+        #[arg(long, value_enum, default_value_t = State::Active)]
+        state: State,
+        /// Maximum number of notes
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: title,url]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(NOTE_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
     /// Print the Markdown body of a note
     #[command(after_help = fields_help(NOTE_FIELDS))]
     View {
@@ -312,6 +357,37 @@ struct Filters {
     /// Only results liked by this account; repeat for more
     #[arg(long = "liker", value_name = "ACCOUNT")]
     likers: Vec<String>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum NoteSort {
+    ContentUpdatedAt,
+    Title,
+    PublishedAt,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum State {
+    Active,
+    Archived,
+    All,
+}
+
+impl State {
+    /// The API's `active` argument; null selects both.
+    fn active(self) -> Value {
+        match self {
+            State::Active => json!(true),
+            State::Archived => json!(false),
+            State::All => Value::Null,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Direction {
+    Asc,
+    Desc,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -436,6 +512,29 @@ fn main() -> ExitCode {
         Command::Note(NoteCommand::View { note, team, json }) => {
             note_view(note, team.as_deref(), json.as_deref())
         }
+        Command::Note(NoteCommand::List {
+            folder,
+            group,
+            not_in_folder,
+            sort,
+            order,
+            state,
+            limit,
+            team,
+            json,
+        }) => note_list(
+            NoteFilters {
+                folder,
+                group,
+                not_in_folder,
+                sort,
+                order,
+                state,
+            },
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+        ),
         Command::Note(NoteCommand::Comments { note, team }) => note_comments(note, team.as_deref()),
         Command::Folder(FolderCommand::View {
             folder: target,
@@ -691,6 +790,81 @@ fn note_view(
     }
 }
 
+struct NoteFilters {
+    folder: Option<Location>,
+    group: Option<location::Group>,
+    not_in_folder: bool,
+    sort: NoteSort,
+    order: Direction,
+    state: State,
+}
+
+fn note_list(
+    filters: NoteFilters,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let url_team = filters.folder.as_ref().and_then(|f| f.team.as_deref());
+    let url_team = url_team.or(filters.group.as_ref().and_then(|g| g.team.as_deref()));
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
+    let client = open_client(&team)?;
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({
+        "first": limit,
+        "orderBy": { "field": api_enum(filters.sort), "direction": api_enum(filters.order) },
+        "active": filters.state.active(),
+    });
+    if filters.not_in_folder {
+        variables["onlyNotAttachedFolder"] = json!(true);
+    }
+    if let Some(folder) = &filters.folder {
+        let id = lookup::folder_id(&client, &folder.path).map_err(api_error)?;
+        variables["folderId"] =
+            id.ok_or_else(|| format!("folder {} was not found in {team}", folder.path))?;
+    }
+    if let Some(group) = &filters.group {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        variables["id"] = lookup::group_id(&groups, &group.key)?;
+    }
+
+    let fields = json.map_or_else(
+        || "title url".to_string(),
+        |fields| selection(fields, NOTE_EXPANSIONS),
+    );
+    let data = client
+        .query(
+            &note_list_query(filters.group.is_some(), &fields),
+            variables,
+        )
+        .map_err(api_error)?;
+    let notes = match filters.group {
+        Some(_) => &data["group"]["notes"],
+        None => &data["notes"],
+    };
+    output(&format!("{notes}\n"))
+}
+
+/// The notes of a group come from `Group.notes`, which takes no folder; the others from `notes`.
+fn note_list_query(in_group: bool, fields: &str) -> String {
+    let connection = format!("totalCount nodes {{ {fields} }}");
+    if in_group {
+        format!(
+            "query($id: ID!, $first: Int!, $orderBy: NoteOrder, $active: Boolean, \
+               $onlyNotAttachedFolder: Boolean) {{ group(id: $id) {{ \
+               notes(first: $first, orderBy: $orderBy, active: $active, \
+                 onlyNotAttachedFolder: $onlyNotAttachedFolder) {{ {connection} }} }} }}"
+        )
+    } else {
+        format!(
+            "query($first: Int!, $orderBy: NoteOrder, $active: Boolean, $folderId: ID) {{ \
+               notes(first: $first, orderBy: $orderBy, active: $active, folderId: $folderId) \
+               {{ {connection} }} }}"
+        )
+    }
+}
+
 fn note_comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
@@ -866,6 +1040,9 @@ mod tests {
         assert_eq!(api_enum(Updated::Within3Days), "WITHIN_3_DAYS");
         assert_eq!(api_enum(Updated::Within6Months), "WITHIN_6_MONTHS");
         assert_eq!(api_enum(Resource::Attachment), "ATTACHMENT");
+        assert_eq!(api_enum(NoteSort::ContentUpdatedAt), "CONTENT_UPDATED_AT");
+        assert_eq!(api_enum(NoteSort::PublishedAt), "PUBLISHED_AT");
+        assert_eq!(api_enum(Direction::Asc), "ASC");
     }
 
     #[test]

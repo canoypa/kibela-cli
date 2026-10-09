@@ -30,6 +30,7 @@ Commands pick the team in this order: `--team` or the team in a note URL, then t
 
 ```sh
 kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches with excerpts, as JSON
+kibela note list [--folder <folder> | --group <group>] [-L <limit>] [--json <fields>]   # notes, as JSON
 kibela note view <note> [--json <fields>]                           # Markdown body of a note
 kibela note comments <note>                                         # comments and inline comments, as JSON
 kibela folder view <folder> [-L <limit>] [--json <fields>]          # a folder with its notes and subfolders, as JSON
