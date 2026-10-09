@@ -109,6 +109,81 @@ const FOLDER_FIELDS: &[&str] = &[
     "updatedAt",
 ];
 
+const GROUP_EXPANSIONS: &[(&str, &str)] = &[
+    (
+        "notes",
+        "notes(first: $first) { totalCount nodes { title url } }",
+    ),
+    // Without parentFolderId the API returns every folder in the group, nested ones included.
+    (
+        "folders",
+        "folders(first: $first, parentFolderId: null) { totalCount nodes { fullName fixedPath } }",
+    ),
+];
+
+const GROUP_FIELDS: &[&str] = &[
+    "allowNoteExternalSharing",
+    "archivedAt",
+    "canBeJoinedBySelf",
+    "canBeManaged",
+    "coverImageKey",
+    "createdAt",
+    "description",
+    "feedUpdatedAt",
+    "folders",
+    "id",
+    "isArchived",
+    "isDefault",
+    "isJoined",
+    "isNotePublicationApprovalRequired",
+    "isPrivate",
+    "isVisibilityChangeable",
+    "name",
+    "notes",
+    "path",
+    "updatedAt",
+];
+
+/// The folder fields without its connections, which would multiply `-L` into each folder.
+const FOLDER_LIST_FIELDS: &[&str] = &[
+    "activeChildrenCount",
+    "aliveNotesCount",
+    "alivePinnedNotesCount",
+    "archivedAt",
+    "canBeManaged",
+    "createdAt",
+    "fixedPath",
+    "fullName",
+    "group",
+    "id",
+    "lastModifiedAt",
+    "name",
+    "newNotePath",
+    "path",
+    "updatedAt",
+];
+
+const FOLDER_SEARCH_FIELDS: &[&str] = &["fixedPath", "folder", "group", "name"];
+
+const FOLDER_SEARCH_EXPANSIONS: &[(&str, &str)] = &[
+    ("folder", "folder { fullName fixedPath }"),
+    ("group", "group { name }"),
+];
+
+const USER_FIELDS: &[&str] = &[
+    "account",
+    "biography",
+    "email",
+    "id",
+    "isOptOutCollabModeStartDialog",
+    "locale",
+    "path",
+    "realName",
+    "role",
+    "shortBio",
+    "url",
+];
+
 fn fields_help(fields: &[&str]) -> String {
     let mut help = String::from("JSON FIELDS");
     let mut line = String::new();
@@ -162,24 +237,74 @@ enum Command {
         #[command(flatten)]
         filters: Filters,
     },
-    /// Print all comments and inline comments of a note, with replies, as JSON
+    /// Read notes
+    #[command(subcommand)]
+    Note(NoteCommand),
+    /// Read folders
+    #[command(subcommand)]
+    Folder(FolderCommand),
+    /// Read users
+    #[command(subcommand)]
+    User(UserCommand),
+    /// Read groups
+    #[command(subcommand)]
+    Group(GroupCommand),
+    /// Manage teams and their API tokens
+    #[command(subcommand)]
+    Team(TeamCommand),
+}
+
+#[derive(Subcommand)]
+enum NoteCommand {
+    /// List notes as JSON
     ///
-    /// Prints {"comments":{"totalCount":N,"nodes":[...]},"inlineComments":{...}}.
-    /// Replies are in each comment's "replies". An inline comment's
-    /// noteTextSelection.startLineInMarkdown is 0-based: it is line N+1 of the body
-    /// printed by `kibela get`.
-    Comments {
-        /// Note number or URL (https://<team>.kibe.la/notes/<number>)
-        #[arg(value_parser = location::note)]
-        note: Location,
+    /// Prints {"totalCount":N,"nodes":[...]}. Without --folder or --group, lists the notes of
+    /// the whole team. When totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(NOTE_FIELDS))]
+    List {
+        /// Only notes in this folder (as `kibela folder view` takes it)
+        #[arg(long, value_name = "FOLDER", value_parser = location::folder, conflicts_with = "group")]
+        folder: Option<Location>,
+        /// Only notes in this group (as `kibela group view` takes it)
+        #[arg(long, value_name = "GROUP", value_parser = location::group)]
+        group: Option<location::Group>,
+        /// With --group, only notes that are in no folder
+        #[arg(long, requires = "group")]
+        not_in_folder: bool,
+        /// Field to order by
+        #[arg(long, value_enum, default_value_t = NoteSort::ContentUpdatedAt)]
+        sort: NoteSort,
+        /// Direction of the order
+        #[arg(long, value_enum, default_value_t = Direction::Desc)]
+        order: Direction,
+        /// Which notes to list by whether they are archived
+        #[arg(long, value_enum, default_value_t = State::Active)]
+        state: State,
+        /// Maximum number of notes
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
         team: Option<String>,
+        /// Output JSON with the specified fields [default: title,url]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(NOTE_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
     },
     /// Print the Markdown body of a note
     #[command(after_help = fields_help(NOTE_FIELDS))]
-    Get {
-        /// Note number or URL (https://<team>.kibe.la/notes/<number>)
+    View {
+        /// Note number, path (/notes/<number>), or URL (https://<team>.kibe.la/notes/<number>)
         #[arg(value_parser = location::note)]
         note: Location,
         /// Team to read from
@@ -195,13 +320,105 @@ enum Command {
         )]
         json: Option<Vec<String>>,
     },
+    /// Print all comments and inline comments of a note, with replies, as JSON
+    ///
+    /// Prints {"comments":{"totalCount":N,"nodes":[...]},"inlineComments":{...}}.
+    /// Replies are in each comment's "replies". An inline comment's
+    /// noteTextSelection.startLineInMarkdown is 0-based: it is line N+1 of the body
+    /// printed by `kibela note view`.
+    Comments {
+        /// Note number, path (/notes/<number>), or URL (https://<team>.kibe.la/notes/<number>)
+        #[arg(value_parser = location::note)]
+        note: Location,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum FolderCommand {
+    /// Search folders by name; prints matches as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]} with the top matches. A folder's fixedPath goes to
+    /// `kibela folder view`. When totalCount is larger than the number of nodes, raise --limit.
+    /// In name, the full name of the folder, <em class="searchHighlight"> marks the matched words.
+    #[command(after_help = fields_help(FOLDER_SEARCH_FIELDS))]
+    Search {
+        /// Words to search for
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// Maximum number of results
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to search
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: folder,group]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(FOLDER_SEARCH_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+    /// List folders as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]}. Lists every folder, nested ones included, unless
+    /// --root or --parent narrows it. A folder's fixedPath (/folders/<number>) can be passed to
+    /// `kibela folder view`. When totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(FOLDER_LIST_FIELDS))]
+    List {
+        /// Only folders in this group (as `kibela group view` takes it)
+        #[arg(long, value_name = "GROUP", value_parser = location::group)]
+        group: Option<location::Group>,
+        /// Only top-level folders
+        #[arg(long, conflicts_with = "parent")]
+        root: bool,
+        /// Only the subfolders of this folder (as `kibela folder view` takes it)
+        #[arg(long, value_name = "FOLDER", value_parser = location::folder)]
+        parent: Option<Location>,
+        /// With --group, also list the folders below the ones listed
+        #[arg(long, requires = "group")]
+        with_children: bool,
+        /// Which folders to list by whether they are archived
+        #[arg(long, value_enum, default_value_t = State::Active)]
+        state: State,
+        /// Maximum number of folders
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: fullName,fixedPath]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(FOLDER_LIST_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
     /// Print a folder with its notes and subfolders as JSON
     ///
     /// Prints {"fullName":...,"notes":{"totalCount":N,"nodes":[...]},"folders":{...}}.
-    /// A subfolder's fixedPath (/folders/<number>) can be passed back to `kibela folder`.
+    /// A subfolder's fixedPath (/folders/<number>) can be passed back to `kibela folder view`.
     /// When a totalCount is larger than the number of nodes, raise --limit.
     #[command(after_help = fields_help(FOLDER_FIELDS))]
-    Folder {
+    View {
         /// Folder number, path (/folders/<number>), or URL (https://<team>.kibe.la/folders/<number>)
         #[arg(value_parser = location::folder)]
         folder: Location,
@@ -226,15 +443,6 @@ enum Command {
         )]
         json: Option<Vec<String>>,
     },
-    /// Manage API tokens
-    #[command(subcommand)]
-    Token(TokenCommand),
-    /// Manage registered teams
-    #[command(subcommand)]
-    Team(TeamCommand),
-    /// List groups
-    #[command(subcommand)]
-    Group(GroupCommand),
 }
 
 #[derive(Args)]
@@ -254,18 +462,49 @@ struct Filters {
     /// Only co-edited notes
     #[arg(long)]
     coediting: bool,
-    /// Only results in this group; repeat for more (see `kibela group list`)
-    #[arg(long = "group", value_name = "NAME")]
-    groups: Vec<String>,
-    /// Only results in this folder (as `kibela folder` takes it); repeat for more
+    /// Only results in this group (name, number, path, or URL); repeat for more
+    #[arg(long = "group", value_name = "GROUP", value_parser = location::group)]
+    groups: Vec<location::Group>,
+    /// Only results in this folder (as `kibela folder view` takes it); repeat for more
     #[arg(long = "folder", value_name = "FOLDER", value_parser = location::folder)]
     folders: Vec<Location>,
-    /// Only results written by this account; repeat for more
-    #[arg(long = "user", value_name = "ACCOUNT")]
-    users: Vec<String>,
-    /// Only results liked by this account; repeat for more
-    #[arg(long = "liker", value_name = "ACCOUNT")]
-    likers: Vec<String>,
+    /// Only results written by this user (as `kibela user view` takes it); repeat for more
+    #[arg(long = "user", value_name = "USER", value_parser = location::user)]
+    users: Vec<location::User>,
+    /// Only results liked by this user (as `kibela user view` takes it); repeat for more
+    #[arg(long = "liker", value_name = "USER", value_parser = location::user)]
+    likers: Vec<location::User>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum NoteSort {
+    ContentUpdatedAt,
+    Title,
+    PublishedAt,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum State {
+    Active,
+    Archived,
+    All,
+}
+
+impl State {
+    /// The API's `active` argument; null selects both.
+    fn active(self) -> Value {
+        match self {
+            State::Active => json!(true),
+            State::Archived => json!(false),
+            State::All => Value::Null,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Direction {
+    Asc,
+    Desc,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -301,8 +540,107 @@ fn api_enum(value: impl ValueEnum) -> String {
 }
 
 #[derive(Subcommand)]
+enum UserCommand {
+    /// Print a user as JSON
+    #[command(after_help = fields_help(USER_FIELDS))]
+    View {
+        /// Account, path (/@<account>), or URL (https://<team>.kibe.la/@<account>)
+        #[arg(value_parser = location::user)]
+        user: location::User,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: account,realName,shortBio,url]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(USER_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+    /// List users as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]}. A user's account goes to `kibela user view` and to
+    /// `search --user`. When totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(USER_FIELDS))]
+    List {
+        /// Only users matching this query
+        #[arg(long)]
+        query: Option<String>,
+        /// Only members of this group (as `kibela group view` takes it)
+        #[arg(long, value_name = "GROUP", value_parser = location::group)]
+        group: Option<location::Group>,
+        /// Only enabled users
+        #[arg(long, conflicts_with = "disabled")]
+        enabled: bool,
+        /// Only disabled users
+        #[arg(long)]
+        disabled: bool,
+        /// Only users who have confirmed their account
+        #[arg(long, conflicts_with = "unconfirmed")]
+        confirmed: bool,
+        /// Only users who have not confirmed their account
+        #[arg(long)]
+        unconfirmed: bool,
+        /// Maximum number of users
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: account,realName]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(USER_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+}
+
+#[derive(Subcommand)]
 enum GroupCommand {
-    /// List groups, archived ones included, as JSON; their names go to `search --group`
+    /// Print a group with its top-level folders and its notes as JSON
+    ///
+    /// Prints {"name":...,"description":...,"folders":{"totalCount":N,"nodes":[...]},"notes":{...}}.
+    /// A folder's fixedPath (/folders/<number>) can be passed to `kibela folder view`.
+    /// When a totalCount is larger than the number of nodes, raise --limit.
+    #[command(after_help = fields_help(GROUP_FIELDS))]
+    View {
+        /// Group name, number, path (/groups/<number>), or URL (https://<team>.kibe.la/groups/<number>)
+        #[arg(value_parser = location::group)]
+        group: location::Group,
+        /// Maximum number of folders and of notes
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: name,description,folders,notes]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(GROUP_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+    /// List groups, archived ones included, as JSON; a name or path goes to `group view` and --group
     List {
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
@@ -311,22 +649,27 @@ enum GroupCommand {
 }
 
 #[derive(Subcommand)]
-enum TokenCommand {
-    /// Save a token for a team, read from standard input
-    Set {
-        #[arg(value_parser = config::parse_team)]
-        team: String,
-    },
-    /// Delete the token of a team
-    Delete {
-        #[arg(value_parser = config::parse_team)]
-        team: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum TeamCommand {
-    /// List registered teams; the default team is marked with `*`
+    /// Add a team with an access token, read from standard input
+    ///
+    /// Kibela's API needs an access token for each team. Create one at
+    /// https://<team>.kibe.la/settings/access_tokens and give it on standard input; in a
+    /// terminal it is prompted for without echo. The token is checked against the API and
+    /// stored in the OS keychain. Adding a team again replaces its token.
+    #[command(
+        after_help = "EXAMPLES\n  kibela team add example\n  pbpaste | kibela team add example"
+    )]
+    Add {
+        /// Team name, as in https://<team>.kibe.la
+        #[arg(value_parser = config::parse_team)]
+        team: String,
+    },
+    /// Remove a team and its token
+    Remove {
+        #[arg(value_parser = config::parse_team)]
+        team: String,
+    },
+    /// List added teams; the default team is marked with `*`
     List,
     /// Set the default team
     Use {
@@ -351,17 +694,99 @@ fn main() -> ExitCode {
             json.as_deref(),
             &filters,
         ),
-        Command::Get { note, team, json } => get(note, team.as_deref(), json.as_deref()),
-        Command::Comments { note, team } => comments(note, team.as_deref()),
-        Command::Folder {
+        Command::Note(NoteCommand::View { note, team, json }) => {
+            note_view(note, team.as_deref(), json.as_deref())
+        }
+        Command::Note(NoteCommand::List {
+            folder,
+            group,
+            not_in_folder,
+            sort,
+            order,
+            state,
+            limit,
+            team,
+            json,
+        }) => note_list(
+            NoteFilters {
+                folder,
+                group,
+                not_in_folder,
+                sort,
+                order,
+                state,
+            },
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+        ),
+        Command::Note(NoteCommand::Comments { note, team }) => note_comments(note, team.as_deref()),
+        Command::Folder(FolderCommand::View {
             folder: target,
             limit,
             team,
             json,
-        } => folder(target, limit, team.as_deref(), json.as_deref()),
+        }) => folder_view(target, limit, team.as_deref(), json.as_deref()),
+        Command::Folder(FolderCommand::Search {
+            query,
+            limit,
+            team,
+            json,
+        }) => folder_search(&query.join(" "), limit, team.as_deref(), json.as_deref()),
+        Command::Folder(FolderCommand::List {
+            group,
+            root,
+            parent,
+            with_children,
+            state,
+            limit,
+            team,
+            json,
+        }) => folder_list(
+            FolderFilters {
+                group,
+                root,
+                parent,
+                with_children,
+                state,
+            },
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+        ),
+        Command::User(UserCommand::View { user, team, json }) => {
+            user_view(user, team.as_deref(), json.as_deref())
+        }
+        Command::User(UserCommand::List {
+            query,
+            group,
+            enabled,
+            disabled,
+            confirmed,
+            unconfirmed,
+            limit,
+            team,
+            json,
+        }) => user_list(
+            UserFilters {
+                query,
+                group,
+                enabled: either(enabled, disabled),
+                confirmed: either(confirmed, unconfirmed),
+            },
+            limit,
+            team.as_deref(),
+            json.as_deref(),
+        ),
+        Command::Group(GroupCommand::View {
+            group,
+            limit,
+            team,
+            json,
+        }) => group_view(group, limit, team.as_deref(), json.as_deref()),
         Command::Group(GroupCommand::List { team }) => group_list(team.as_deref()),
-        Command::Token(TokenCommand::Set { team }) => token_set(&team),
-        Command::Token(TokenCommand::Delete { team }) => token_delete(&team),
+        Command::Team(TeamCommand::Add { team }) => team_add(&team),
+        Command::Team(TeamCommand::Remove { team }) => team_remove(&team),
         Command::Team(TeamCommand::List) => team_list(),
         Command::Team(TeamCommand::Use { team }) => team_use(&team),
     };
@@ -374,9 +799,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn read_token() -> Result<String, String> {
+fn read_token(team: &str) -> Result<String, String> {
     let token = if io::stdin().is_terminal() {
-        rpassword::prompt_password("Token: ").map_err(|e| e.to_string())?
+        let _ = writeln!(
+            io::stderr(),
+            "kibela reads {team} with an access token. Create one at \
+             https://{team}.kibe.la/settings/access_tokens and paste it here."
+        );
+        rpassword::prompt_password("Access token: ").map_err(|e| e.to_string())?
     } else {
         let mut input = String::new();
         io::stdin()
@@ -394,7 +824,7 @@ fn read_token() -> Result<String, String> {
 fn describe(error: api::Error, team: &str) -> String {
     match error {
         api::Error::Unauthorized => {
-            format!("the token for {team} is invalid. Run `kibela token set {team}`")
+            format!("the token for {team} is invalid. Run `kibela team add {team}`")
         }
         api::Error::TeamNotFound => format!("team {team} was not found. Check the team name"),
         api::Error::NotFound => "not found".into(),
@@ -409,7 +839,7 @@ fn describe(error: api::Error, team: &str) -> String {
 fn open_client(team: &str) -> Result<api::Client, String> {
     let token = store::get(team)
         .map_err(|e| format!("cannot read the token: {e}"))?
-        .ok_or_else(|| format!("no token is saved for {team}. Run `kibela token set {team}`"))?;
+        .ok_or_else(|| format!("no token is saved for {team}. Run `kibela team add {team}`"))?;
     api::Client::new(team, &token).map_err(|e| describe(e, team))
 }
 
@@ -435,6 +865,12 @@ fn format_utc(time: SystemTime) -> String {
         rem % 3600 / 60,
         rem % 60
     )
+}
+
+/// Reports what a command did on stderr, keeping stdout for results.
+fn report(message: &str) -> Result<(), String> {
+    let _ = writeln!(io::stderr(), "{message}");
+    Ok(())
 }
 
 fn output(text: &str) -> Result<(), String> {
@@ -463,8 +899,10 @@ fn selection<S: AsRef<str>>(fields: &[S], expansions: &[(&str, &str)]) -> String
     fields.join(" ")
 }
 
-fn single_url_team(locations: &[Location]) -> Result<Option<&str>, String> {
-    let mut teams = locations.iter().filter_map(|l| l.team.as_deref());
+fn single_url_team<'a>(
+    teams: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<Option<&'a str>, String> {
+    let mut teams = teams.into_iter().flatten();
     let first = teams.next();
     match teams.find(|team| Some(*team) != first) {
         Some(other) => Err(format!(
@@ -482,7 +920,11 @@ fn search(
     json: Option<&[String]>,
     filters: &Filters,
 ) -> Result<(), String> {
-    let url_team = single_url_team(&filters.folders)?;
+    let url_team = single_url_team(
+        (filters.folders.iter().map(|f| f.team.as_deref()))
+            .chain(filters.groups.iter().map(|g| g.team.as_deref()))
+            .chain((filters.users.iter().chain(&filters.likers)).map(|u| u.team.as_deref())),
+    )?;
     let team = Config::load()?.resolve_team(team_flag, url_team)?;
     let client = open_client(&team)?;
     let api_error = |e| describe(e, &team);
@@ -508,7 +950,7 @@ fn search(
         let ids = filters
             .groups
             .iter()
-            .map(|name| lookup::group_id(&groups, name))
+            .map(|group| lookup::group_id(&groups, &group.key))
             .collect::<Result<Vec<_>, _>>()?;
         variables["groupIds"] = json!(ids);
     }
@@ -525,9 +967,9 @@ fn search(
             continue;
         }
         let mut ids = Vec::new();
-        for account in accounts {
-            let id = lookup::user_id(&client, account).map_err(api_error)?;
-            ids.push(id.ok_or_else(|| format!("user {account} was not found in {team}"))?);
+        for user in accounts {
+            let id = lookup::user_id(&client, &user.account).map_err(api_error)?;
+            ids.push(id.ok_or_else(|| format!("user {} was not found in {team}", user.account))?);
         }
         variables[key] = json!(ids);
     }
@@ -549,7 +991,11 @@ fn search(
     output(&format!("{}\n", data["search"]))
 }
 
-fn get(note: Location, team_flag: Option<&str>, json: Option<&[String]>) -> Result<(), String> {
+fn note_view(
+    note: Location,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
     let fields = json.map_or_else(
@@ -570,11 +1016,93 @@ fn get(note: Location, team_flag: Option<&str>, json: Option<&[String]>) -> Resu
     }
     match json {
         Some(_) => output(&format!("{found}\n")),
-        None => output(found["content"].as_str().unwrap_or_default()),
+        None => {
+            let content = found["content"].as_str().unwrap_or_default();
+            if content.is_empty() || content.ends_with('\n') {
+                output(content)
+            } else {
+                output(&format!("{content}\n"))
+            }
+        }
     }
 }
 
-fn comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
+struct NoteFilters {
+    folder: Option<Location>,
+    group: Option<location::Group>,
+    not_in_folder: bool,
+    sort: NoteSort,
+    order: Direction,
+    state: State,
+}
+
+fn note_list(
+    filters: NoteFilters,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let url_team = filters.folder.as_ref().and_then(|f| f.team.as_deref());
+    let url_team = url_team.or(filters.group.as_ref().and_then(|g| g.team.as_deref()));
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
+    let client = open_client(&team)?;
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({
+        "first": limit,
+        "orderBy": { "field": api_enum(filters.sort), "direction": api_enum(filters.order) },
+        "active": filters.state.active(),
+    });
+    if filters.not_in_folder {
+        variables["onlyNotAttachedFolder"] = json!(true);
+    }
+    if let Some(folder) = &filters.folder {
+        let id = lookup::folder_id(&client, &folder.path).map_err(api_error)?;
+        variables["folderId"] =
+            id.ok_or_else(|| format!("folder {} was not found in {team}", folder.path))?;
+    }
+    if let Some(group) = &filters.group {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        variables["id"] = lookup::group_id(&groups, &group.key)?;
+    }
+
+    let fields = json.map_or_else(
+        || "title url".to_string(),
+        |fields| selection(fields, NOTE_EXPANSIONS),
+    );
+    let data = client
+        .query(
+            &note_list_query(filters.group.is_some(), &fields),
+            variables,
+        )
+        .map_err(api_error)?;
+    let notes = match filters.group {
+        Some(_) => &data["group"]["notes"],
+        None => &data["notes"],
+    };
+    output(&format!("{notes}\n"))
+}
+
+/// The notes of a group come from `Group.notes`, which takes no folder; the others from `notes`.
+fn note_list_query(in_group: bool, fields: &str) -> String {
+    let connection = format!("totalCount nodes {{ {fields} }}");
+    if in_group {
+        format!(
+            "query($id: ID!, $first: Int!, $orderBy: NoteOrder, $active: Boolean, \
+               $onlyNotAttachedFolder: Boolean) {{ group(id: $id) {{ \
+               notes(first: $first, orderBy: $orderBy, active: $active, \
+                 onlyNotAttachedFolder: $onlyNotAttachedFolder) {{ {connection} }} }} }}"
+        )
+    } else {
+        format!(
+            "query($first: Int!, $orderBy: NoteOrder, $active: Boolean, $folderId: ID) {{ \
+               notes(first: $first, orderBy: $orderBy, active: $active, folderId: $folderId) \
+               {{ {connection} }} }}"
+        )
+    }
+}
+
+fn note_comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
     match comments::fetch(&client, &note.path) {
@@ -584,7 +1112,105 @@ fn comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn folder(
+fn folder_search(
+    text: &str,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, None)?;
+    let client = open_client(&team)?;
+    let fields = selection(
+        json.unwrap_or(&["folder".into(), "group".into()]),
+        FOLDER_SEARCH_EXPANSIONS,
+    );
+    let query = format!(
+        "query($query: String!, $first: Int!) {{ searchFolder(query: $query, first: $first) {{ \
+           totalCount nodes {{ {fields} }} }} }}"
+    );
+    let data = client
+        .query(&query, json!({ "query": text, "first": limit }))
+        .map_err(|e| describe(e, &team))?;
+    output(&format!("{}\n", data["searchFolder"]))
+}
+
+struct FolderFilters {
+    group: Option<location::Group>,
+    root: bool,
+    parent: Option<Location>,
+    with_children: bool,
+    state: State,
+}
+
+fn folder_list(
+    filters: FolderFilters,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let url_team = single_url_team([
+        filters.group.as_ref().and_then(|g| g.team.as_deref()),
+        filters.parent.as_ref().and_then(|p| p.team.as_deref()),
+    ])?;
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
+    let client = open_client(&team)?;
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({ "first": limit, "active": filters.state.active() });
+    // Left out, parentFolderId lists every folder; null lists the top-level ones.
+    if filters.root {
+        variables["parentFolderId"] = Value::Null;
+    }
+    if let Some(parent) = &filters.parent {
+        let id = lookup::folder_id(&client, &parent.path).map_err(api_error)?;
+        variables["parentFolderId"] =
+            id.ok_or_else(|| format!("folder {} was not found in {team}", parent.path))?;
+    }
+    if filters.with_children {
+        variables["withChildren"] = json!(true);
+    }
+    if let Some(group) = &filters.group {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        variables["id"] = lookup::group_id(&groups, &group.key)?;
+    }
+
+    let fields = json.map_or_else(
+        || "fullName fixedPath".to_string(),
+        |fields| selection(fields, FOLDER_EXPANSIONS),
+    );
+    let data = client
+        .query(
+            &folder_list_query(filters.group.is_some(), &fields),
+            variables,
+        )
+        .map_err(api_error)?;
+    let folders = match filters.group {
+        Some(_) => &data["group"]["folders"],
+        None => &data["folders"],
+    };
+    output(&format!("{folders}\n"))
+}
+
+/// Only `Group.folders` takes withChildren.
+fn folder_list_query(in_group: bool, fields: &str) -> String {
+    let connection = format!("totalCount nodes {{ {fields} }}");
+    if in_group {
+        format!(
+            "query($id: ID!, $first: Int!, $active: Boolean, $parentFolderId: ID, \
+               $withChildren: Boolean) {{ group(id: $id) {{ folders(first: $first, \
+                 active: $active, parentFolderId: $parentFolderId, withChildren: $withChildren) \
+                 {{ {connection} }} }} }}"
+        )
+    } else {
+        format!(
+            "query($first: Int!, $active: Boolean, $parentFolderId: ID) {{ \
+               folders(first: $first, active: $active, parentFolderId: $parentFolderId) \
+               {{ {connection} }} }}"
+        )
+    }
+}
+
+fn folder_view(
     target: Location,
     limit: u32,
     team_flag: Option<&str>,
@@ -596,7 +1222,12 @@ fn folder(
         Some(fields) => fields.iter().map(String::as_str).collect(),
         None => vec!["fullName", "notes", "folders"],
     };
-    let (query, uses_first) = folder_query(&fields);
+    let (query, uses_first) = view_query(
+        "$path: String!",
+        "folderFromPath(path: $path)",
+        &fields,
+        FOLDER_EXPANSIONS,
+    );
     let variables = if uses_first {
         json!({ "path": target.path, "first": limit })
     } else {
@@ -614,16 +1245,119 @@ fn folder(
     output(&format!("{found}\n"))
 }
 
-/// The folder query for the selected fields, and whether it takes `$first`. GraphQL rejects a
-/// declared variable that the selection does not use.
-fn folder_query(fields: &[&str]) -> (String, bool) {
-    let uses_first = fields.iter().any(|f| matches!(*f, "notes" | "folders"));
+/// The query for the selected fields of `root`, and whether it takes `$first`. GraphQL rejects
+/// a declared variable that the selection does not use.
+fn view_query(
+    params: &str,
+    root: &str,
+    fields: &[&str],
+    expansions: &[(&str, &str)],
+) -> (String, bool) {
+    let selection = selection(fields, expansions);
+    let uses_first = selection.contains("$first");
     let first = if uses_first { ", $first: Int!" } else { "" };
-    let query = format!(
-        "query($path: String!{first}) {{ folderFromPath(path: $path) {{ {} }} }}",
-        selection(fields, FOLDER_EXPANSIONS)
-    );
+    let query = format!("query({params}{first}) {{ {root} {{ {selection} }} }}");
     (query, uses_first)
+}
+
+fn user_view(
+    user: location::User,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, user.team.as_deref())?;
+    let client = open_client(&team)?;
+    let fields = json.map_or_else(
+        || "account realName shortBio url".to_string(),
+        |fields| fields.join(" "),
+    );
+    let query =
+        format!("query($account: String!) {{ userFromAccount(account: $account) {{ {fields} }} }}");
+    let not_found = || format!("user {} was not found in {team}", user.account);
+    let data = client
+        .query(&query, json!({ "account": user.account }))
+        .map_err(|e| match e {
+            api::Error::NotFound => not_found(),
+            e => describe(e, &team),
+        })?;
+    let found = &data["userFromAccount"];
+    if found.is_null() {
+        return Err(not_found());
+    }
+    output(&format!("{found}\n"))
+}
+
+/// A pair of opposite flags as the API's Boolean; with neither, null selects both.
+fn either(yes: bool, no: bool) -> Option<bool> {
+    match (yes, no) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    }
+}
+
+struct UserFilters {
+    query: Option<String>,
+    group: Option<location::Group>,
+    enabled: Option<bool>,
+    confirmed: Option<bool>,
+}
+
+fn user_list(
+    filters: UserFilters,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let url_team = filters.group.as_ref().and_then(|g| g.team.as_deref());
+    let team = Config::load()?.resolve_team(team_flag, url_team)?;
+    let client = open_client(&team)?;
+    let api_error = |e| describe(e, &team);
+
+    let mut variables = json!({
+        "first": limit,
+        "query": filters.query,
+        "enabled": filters.enabled,
+        "confirmed": filters.confirmed,
+    });
+    if let Some(group) = &filters.group {
+        let groups = lookup::groups(&client).map_err(api_error)?;
+        variables["groupId"] = lookup::group_id(&groups, &group.key)?;
+    }
+    let fields = json.map_or_else(|| "account realName".to_string(), |fields| fields.join(" "));
+    let query = format!(
+        "query($first: Int!, $query: String, $groupId: ID, $enabled: Boolean, \
+           $confirmed: Boolean) {{ users(first: $first, query: $query, groupId: $groupId, \
+             enabled: $enabled, confirmed: $confirmed) {{ totalCount nodes {{ {fields} }} }} }}"
+    );
+    let data = client.query(&query, variables).map_err(api_error)?;
+    output(&format!("{}\n", data["users"]))
+}
+
+fn group_view(
+    group: location::Group,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, group.team.as_deref())?;
+    let client = open_client(&team)?;
+    let groups = lookup::groups(&client).map_err(|e| describe(e, &team))?;
+    let id = lookup::group_id(&groups, &group.key)?;
+    let fields: Vec<&str> = match json {
+        Some(fields) => fields.iter().map(String::as_str).collect(),
+        None => vec!["name", "description", "folders", "notes"],
+    };
+    let (query, uses_first) = view_query("$id: ID!", "group(id: $id)", &fields, GROUP_EXPANSIONS);
+    let variables = if uses_first {
+        json!({ "id": id, "first": limit })
+    } else {
+        json!({ "id": id })
+    };
+    let data = client
+        .query(&query, variables)
+        .map_err(|e| describe(e, &team))?;
+    output(&format!("{}\n", data["group"]))
 }
 
 fn group_list(team_flag: Option<&str>) -> Result<(), String> {
@@ -638,8 +1372,8 @@ fn group_list(team_flag: Option<&str>) -> Result<(), String> {
     output(&format!("{groups}\n"))
 }
 
-fn token_set(team: &str) -> Result<(), String> {
-    let token = read_token()?;
+fn team_add(team: &str) -> Result<(), String> {
+    let token = read_token(team)?;
     let client = api::Client::new(team, &token).map_err(|e| describe(e, team))?;
     let data = match client.query("query { currentUser { account realName } }", json!({})) {
         Ok(data) => data,
@@ -657,13 +1391,13 @@ fn token_set(team: &str) -> Result<(), String> {
         config.save()?;
     }
 
-    output(&format!("Saved token for {team} ({account})\n"))
+    report(&format!("Added {team} ({account})"))
 }
 
-fn token_delete(team: &str) -> Result<(), String> {
+fn team_remove(team: &str) -> Result<(), String> {
     let mut config = Config::load()?;
     if !config.has_team(team) {
-        return Err(format!("team {team} is not registered"));
+        return Err(format!("team {team} is not added"));
     }
     store::delete(team).map_err(|e| format!("cannot delete the token: {e}"))?;
     config.teams.retain(|t| t != team);
@@ -671,11 +1405,14 @@ fn token_delete(team: &str) -> Result<(), String> {
         config.default_team = None;
     }
     config.save()?;
-    output(&format!("Deleted token for {team}\n"))
+    report(&format!("Removed {team}"))
 }
 
 fn team_list() -> Result<(), String> {
     let config = Config::load()?;
+    if config.teams.is_empty() {
+        return report("no team is added. Run `kibela team add <team>`");
+    }
     let mut list = String::new();
     for team in &config.teams {
         let mark = if config.default_team.as_deref() == Some(team.as_str()) {
@@ -692,11 +1429,12 @@ fn team_use(team: &str) -> Result<(), String> {
     let mut config = Config::load()?;
     if !config.has_team(team) {
         return Err(format!(
-            "team {team} is not registered. Run `kibela token set {team}`"
+            "team {team} is not added. Run `kibela team add {team}`"
         ));
     }
     config.default_team = Some(team.to_string());
-    config.save()
+    config.save()?;
+    report(&format!("Set {team} as the default team"))
 }
 
 #[cfg(test)]
@@ -711,6 +1449,9 @@ mod tests {
         assert_eq!(api_enum(Updated::Within3Days), "WITHIN_3_DAYS");
         assert_eq!(api_enum(Updated::Within6Months), "WITHIN_6_MONTHS");
         assert_eq!(api_enum(Resource::Attachment), "ATTACHMENT");
+        assert_eq!(api_enum(NoteSort::ContentUpdatedAt), "CONTENT_UPDATED_AT");
+        assert_eq!(api_enum(NoteSort::PublishedAt), "PUBLISHED_AT");
+        assert_eq!(api_enum(Direction::Asc), "ASC");
     }
 
     #[test]
@@ -726,8 +1467,16 @@ mod tests {
     }
 
     #[test]
-    fn folder_query_declares_first_only_for_connections() {
-        let (query, uses_first) = folder_query(&["fullName", "notes", "folders"]);
+    fn view_query_declares_first_only_for_connections() {
+        let folder = |fields: &[&str]| {
+            view_query(
+                "$path: String!",
+                "folderFromPath(path: $path)",
+                fields,
+                FOLDER_EXPANSIONS,
+            )
+        };
+        let (query, uses_first) = folder(&["fullName", "notes", "folders"]);
         assert!(uses_first);
         assert_eq!(
             query,
@@ -735,7 +1484,7 @@ mod tests {
              notes(first: $first) { totalCount nodes { title url } } \
              folders(first: $first) { totalCount nodes { name fixedPath } } } }"
         );
-        let (query, uses_first) = folder_query(&["name", "group"]);
+        let (query, uses_first) = folder(&["name", "group"]);
         assert!(!uses_first);
         assert_eq!(
             query,
@@ -744,17 +1493,22 @@ mod tests {
     }
 
     #[test]
-    fn urls_must_share_a_team() {
-        let at = |team: Option<&str>| Location {
-            team: team.map(String::from),
-            path: "/folders/1".into(),
-        };
-        assert_eq!(single_url_team(&[]), Ok(None));
+    fn group_folders_are_the_top_level_ones() {
+        let (query, uses_first) =
+            view_query("$id: ID!", "group(id: $id)", &["folders"], GROUP_EXPANSIONS);
+        assert!(uses_first);
         assert_eq!(
-            single_url_team(&[at(None), at(Some("a")), at(Some("a"))]),
-            Ok(Some("a"))
+            query,
+            "query($id: ID!, $first: Int!) { group(id: $id) { \
+             folders(first: $first, parentFolderId: null) { totalCount nodes { fullName fixedPath } } } }"
         );
-        assert!(single_url_team(&[at(Some("a")), at(Some("b"))]).is_err());
+    }
+
+    #[test]
+    fn urls_must_share_a_team() {
+        assert_eq!(single_url_team([]), Ok(None));
+        assert_eq!(single_url_team([None, Some("a"), Some("a")]), Ok(Some("a")));
+        assert!(single_url_team([Some("a"), Some("b")]).is_err());
     }
 
     #[test]

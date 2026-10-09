@@ -7,9 +7,9 @@ See [README.md](README.md) for installation and the command list.
 ## Purpose and Direction
 
 - **Read-only.** Commands read notes, search results, and comments. Nothing writes to Kibela.
-- **Return only what was asked for.** `get` prints the Markdown body as-is; `search`, `get`, and `folder` take `--json <fields>` to choose fields. JSON keeps the API's field names and shape, with only `data.<field>` unwrapped. Lists are `{"totalCount": …, "nodes": […]}` with the API's `totalCount`.
-- **Expose the API's read options as they are.** `search` filters map one-to-one to the arguments of the API's `search`, with enum values in kebab case. Names that the API takes as ids (groups, folders, accounts) are resolved with one extra query each.
-- **Work with pipes and redirects.** Results go to stdout; errors go to stderr as `error: …`.
+- **Return only what was asked for.** `note view` prints the Markdown body as-is, ending it with a newline if it lacks one; commands that print JSON take `--json <fields>` to choose fields, except `note comments` and `group list`. JSON keeps the API's field names and shape, with only `data.<field>` unwrapped. Lists are `{"totalCount": …, "nodes": […]}` with the API's `totalCount`.
+- **Expose the API's read options as they are.** Each command maps to one API field (`note list` to `notes` or `Group.notes`, `folder search` to `searchFolder`, …), and its options map one-to-one to that field's arguments, with enum values in kebab case and the API's defaults. Names that the API takes as ids (groups, folders, accounts) are resolved with one extra query each.
+- **Work with pipes and redirects.** Results go to stdout; errors (as `error: …`) and reports of what a command did go to stderr.
 - **Never pick a team silently.** Teams hold separate data, so a command fails with guidance when the team is ambiguous.
 
 ## Build and Test

@@ -79,7 +79,7 @@ impl Config {
         }
         match self.teams.as_slice() {
             [team] => Ok(team.clone()),
-            [] => Err("no team is registered. Run `kibela token set <team>`".into()),
+            [] => Err("no team is added. Run `kibela team add <team>`".into()),
             _ => {
                 Err("no default team. Run `kibela team use <team>` or pass `--team <team>`".into())
             }
