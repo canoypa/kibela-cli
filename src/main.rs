@@ -162,23 +162,25 @@ enum Command {
         #[command(flatten)]
         filters: Filters,
     },
-    /// Print all comments and inline comments of a note, with replies, as JSON
-    ///
-    /// Prints {"comments":{"totalCount":N,"nodes":[...]},"inlineComments":{...}}.
-    /// Replies are in each comment's "replies". An inline comment's
-    /// noteTextSelection.startLineInMarkdown is 0-based: it is line N+1 of the body
-    /// printed by `kibela get`.
-    Comments {
-        /// Note number or URL (https://<team>.kibe.la/notes/<number>)
-        #[arg(value_parser = location::note)]
-        note: Location,
-        /// Team to read from
-        #[arg(long, value_parser = config::parse_team)]
-        team: Option<String>,
-    },
+    /// Read notes
+    #[command(subcommand)]
+    Note(NoteCommand),
+    /// Read folders
+    #[command(subcommand)]
+    Folder(FolderCommand),
+    /// List groups
+    #[command(subcommand)]
+    Group(GroupCommand),
+    /// Manage teams and their API tokens
+    #[command(subcommand)]
+    Team(TeamCommand),
+}
+
+#[derive(Subcommand)]
+enum NoteCommand {
     /// Print the Markdown body of a note
     #[command(after_help = fields_help(NOTE_FIELDS))]
-    Get {
+    View {
         /// Note number or URL (https://<team>.kibe.la/notes/<number>)
         #[arg(value_parser = location::note)]
         note: Location,
@@ -195,13 +197,31 @@ enum Command {
         )]
         json: Option<Vec<String>>,
     },
+    /// Print all comments and inline comments of a note, with replies, as JSON
+    ///
+    /// Prints {"comments":{"totalCount":N,"nodes":[...]},"inlineComments":{...}}.
+    /// Replies are in each comment's "replies". An inline comment's
+    /// noteTextSelection.startLineInMarkdown is 0-based: it is line N+1 of the body
+    /// printed by `kibela note view`.
+    Comments {
+        /// Note number or URL (https://<team>.kibe.la/notes/<number>)
+        #[arg(value_parser = location::note)]
+        note: Location,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum FolderCommand {
     /// Print a folder with its notes and subfolders as JSON
     ///
     /// Prints {"fullName":...,"notes":{"totalCount":N,"nodes":[...]},"folders":{...}}.
-    /// A subfolder's fixedPath (/folders/<number>) can be passed back to `kibela folder`.
+    /// A subfolder's fixedPath (/folders/<number>) can be passed back to `kibela folder view`.
     /// When a totalCount is larger than the number of nodes, raise --limit.
     #[command(after_help = fields_help(FOLDER_FIELDS))]
-    Folder {
+    View {
         /// Folder number, path (/folders/<number>), or URL (https://<team>.kibe.la/folders/<number>)
         #[arg(value_parser = location::folder)]
         folder: Location,
@@ -226,15 +246,6 @@ enum Command {
         )]
         json: Option<Vec<String>>,
     },
-    /// Manage API tokens
-    #[command(subcommand)]
-    Token(TokenCommand),
-    /// Manage registered teams
-    #[command(subcommand)]
-    Team(TeamCommand),
-    /// List groups
-    #[command(subcommand)]
-    Group(GroupCommand),
 }
 
 #[derive(Args)]
@@ -257,7 +268,7 @@ struct Filters {
     /// Only results in this group; repeat for more (see `kibela group list`)
     #[arg(long = "group", value_name = "NAME")]
     groups: Vec<String>,
-    /// Only results in this folder (as `kibela folder` takes it); repeat for more
+    /// Only results in this folder (as `kibela folder view` takes it); repeat for more
     #[arg(long = "folder", value_name = "FOLDER", value_parser = location::folder)]
     folders: Vec<Location>,
     /// Only results written by this account; repeat for more
@@ -311,22 +322,18 @@ enum GroupCommand {
 }
 
 #[derive(Subcommand)]
-enum TokenCommand {
-    /// Save a token for a team, read from standard input
-    Set {
-        #[arg(value_parser = config::parse_team)]
-        team: String,
-    },
-    /// Delete the token of a team
-    Delete {
-        #[arg(value_parser = config::parse_team)]
-        team: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum TeamCommand {
-    /// List registered teams; the default team is marked with `*`
+    /// Add a team with its API token, read from standard input; adding it again replaces the token
+    Add {
+        #[arg(value_parser = config::parse_team)]
+        team: String,
+    },
+    /// Remove a team and its token
+    Remove {
+        #[arg(value_parser = config::parse_team)]
+        team: String,
+    },
+    /// List added teams; the default team is marked with `*`
     List,
     /// Set the default team
     Use {
@@ -351,17 +358,19 @@ fn main() -> ExitCode {
             json.as_deref(),
             &filters,
         ),
-        Command::Get { note, team, json } => get(note, team.as_deref(), json.as_deref()),
-        Command::Comments { note, team } => comments(note, team.as_deref()),
-        Command::Folder {
+        Command::Note(NoteCommand::View { note, team, json }) => {
+            note_view(note, team.as_deref(), json.as_deref())
+        }
+        Command::Note(NoteCommand::Comments { note, team }) => note_comments(note, team.as_deref()),
+        Command::Folder(FolderCommand::View {
             folder: target,
             limit,
             team,
             json,
-        } => folder(target, limit, team.as_deref(), json.as_deref()),
+        }) => folder_view(target, limit, team.as_deref(), json.as_deref()),
         Command::Group(GroupCommand::List { team }) => group_list(team.as_deref()),
-        Command::Token(TokenCommand::Set { team }) => token_set(&team),
-        Command::Token(TokenCommand::Delete { team }) => token_delete(&team),
+        Command::Team(TeamCommand::Add { team }) => team_add(&team),
+        Command::Team(TeamCommand::Remove { team }) => team_remove(&team),
         Command::Team(TeamCommand::List) => team_list(),
         Command::Team(TeamCommand::Use { team }) => team_use(&team),
     };
@@ -394,7 +403,7 @@ fn read_token() -> Result<String, String> {
 fn describe(error: api::Error, team: &str) -> String {
     match error {
         api::Error::Unauthorized => {
-            format!("the token for {team} is invalid. Run `kibela token set {team}`")
+            format!("the token for {team} is invalid. Run `kibela team add {team}`")
         }
         api::Error::TeamNotFound => format!("team {team} was not found. Check the team name"),
         api::Error::NotFound => "not found".into(),
@@ -409,7 +418,7 @@ fn describe(error: api::Error, team: &str) -> String {
 fn open_client(team: &str) -> Result<api::Client, String> {
     let token = store::get(team)
         .map_err(|e| format!("cannot read the token: {e}"))?
-        .ok_or_else(|| format!("no token is saved for {team}. Run `kibela token set {team}`"))?;
+        .ok_or_else(|| format!("no token is saved for {team}. Run `kibela team add {team}`"))?;
     api::Client::new(team, &token).map_err(|e| describe(e, team))
 }
 
@@ -549,7 +558,11 @@ fn search(
     output(&format!("{}\n", data["search"]))
 }
 
-fn get(note: Location, team_flag: Option<&str>, json: Option<&[String]>) -> Result<(), String> {
+fn note_view(
+    note: Location,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
     let fields = json.map_or_else(
@@ -574,7 +587,7 @@ fn get(note: Location, team_flag: Option<&str>, json: Option<&[String]>) -> Resu
     }
 }
 
-fn comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
+fn note_comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
     let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
     let client = open_client(&team)?;
     match comments::fetch(&client, &note.path) {
@@ -584,7 +597,7 @@ fn comments(note: Location, team_flag: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn folder(
+fn folder_view(
     target: Location,
     limit: u32,
     team_flag: Option<&str>,
@@ -638,7 +651,7 @@ fn group_list(team_flag: Option<&str>) -> Result<(), String> {
     output(&format!("{groups}\n"))
 }
 
-fn token_set(team: &str) -> Result<(), String> {
+fn team_add(team: &str) -> Result<(), String> {
     let token = read_token()?;
     let client = api::Client::new(team, &token).map_err(|e| describe(e, team))?;
     let data = match client.query("query { currentUser { account realName } }", json!({})) {
@@ -657,13 +670,13 @@ fn token_set(team: &str) -> Result<(), String> {
         config.save()?;
     }
 
-    output(&format!("Saved token for {team} ({account})\n"))
+    output(&format!("Added {team} ({account})\n"))
 }
 
-fn token_delete(team: &str) -> Result<(), String> {
+fn team_remove(team: &str) -> Result<(), String> {
     let mut config = Config::load()?;
     if !config.has_team(team) {
-        return Err(format!("team {team} is not registered"));
+        return Err(format!("team {team} is not added"));
     }
     store::delete(team).map_err(|e| format!("cannot delete the token: {e}"))?;
     config.teams.retain(|t| t != team);
@@ -671,11 +684,18 @@ fn token_delete(team: &str) -> Result<(), String> {
         config.default_team = None;
     }
     config.save()?;
-    output(&format!("Deleted token for {team}\n"))
+    output(&format!("Removed {team}\n"))
 }
 
 fn team_list() -> Result<(), String> {
     let config = Config::load()?;
+    if config.teams.is_empty() {
+        let _ = writeln!(
+            io::stderr(),
+            "no team is added. Run `kibela team add <team>`"
+        );
+        return Ok(());
+    }
     let mut list = String::new();
     for team in &config.teams {
         let mark = if config.default_team.as_deref() == Some(team.as_str()) {
@@ -692,11 +712,12 @@ fn team_use(team: &str) -> Result<(), String> {
     let mut config = Config::load()?;
     if !config.has_team(team) {
         return Err(format!(
-            "team {team} is not registered. Run `kibela token set {team}`"
+            "team {team} is not added. Run `kibela team add {team}`"
         ));
     }
     config.default_team = Some(team.to_string());
-    config.save()
+    config.save()?;
+    output(&format!("Set {team} as the default team\n"))
 }
 
 #[cfg(test)]
