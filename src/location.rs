@@ -13,8 +13,10 @@ pub fn note(arg: &str) -> Result<Location, String> {
             path: format!("/notes/{arg}"),
         });
     }
-    from_url(arg).ok_or_else(|| {
-        "neither a note number nor a note URL (https://<team>.kibe.la/notes/<number>)".to_string()
+    from_path(arg).or_else(|| from_url(arg)).ok_or_else(|| {
+        "neither a note number, a path (/notes/<number>), nor a note URL \
+         (https://<team>.kibe.la/notes/<number>)"
+            .to_string()
     })
 }
 
@@ -24,16 +26,13 @@ pub fn folder(arg: &str) -> Result<Location, String> {
             team: None,
             path: format!("/folders/{arg}"),
         }
-    } else if arg.starts_with('/') {
-        Location {
-            team: None,
-            path: arg.to_string(),
-        }
     } else {
-        from_url(arg).unwrap_or(Location {
-            team: None,
-            path: String::new(),
-        })
+        from_path(arg)
+            .or_else(|| from_url(arg))
+            .unwrap_or(Location {
+                team: None,
+                path: String::new(),
+            })
     };
     // Only /folders/<number> reaches folderFromPath; the /notes/folder/<name> path that
     // Folder.path returns is not found there.
@@ -51,22 +50,32 @@ fn is_number(arg: &str) -> bool {
     !arg.is_empty() && arg.bytes().all(|b| b.is_ascii_digit())
 }
 
+fn from_path(arg: &str) -> Option<Location> {
+    Some(Location {
+        team: None,
+        path: page_path(arg.strip_prefix('/')?)?,
+    })
+}
+
 fn from_url(arg: &str) -> Option<Location> {
     let rest = arg.strip_prefix("https://")?;
     let (host, path) = rest.split_once('/')?;
     let team = config::parse_team(host.strip_suffix(".kibe.la")?).ok()?;
+    Some(Location {
+        team: Some(team),
+        path: page_path(path)?,
+    })
+}
+
+/// The path of the page, without the query, the fragment (such as `#comment_3`), or a
+/// trailing slash. `path` is what follows the first `/`.
+fn page_path(path: &str) -> Option<String> {
     let path = path
         .split(['?', '#'])
         .next()
         .unwrap_or_default()
         .trim_end_matches('/');
-    if path.is_empty() {
-        return None;
-    }
-    Some(Location {
-        team: Some(team),
-        path: format!("/{path}"),
-    })
+    (!path.is_empty()).then(|| format!("/{path}"))
 }
 
 #[cfg(test)]
@@ -83,6 +92,15 @@ mod tests {
     #[test]
     fn note_number() {
         assert_eq!(note("123"), Ok(location(None, "/notes/123")));
+    }
+
+    #[test]
+    fn note_path() {
+        assert_eq!(note("/notes/123"), Ok(location(None, "/notes/123")));
+        assert_eq!(
+            note("/notes/123#comment_3"),
+            Ok(location(None, "/notes/123"))
+        );
     }
 
     #[test]
@@ -115,6 +133,7 @@ mod tests {
     fn invalid() {
         for arg in [
             "",
+            "/",
             "abc",
             "http://example.kibe.la/notes/1",
             "https://example.com/notes/1",

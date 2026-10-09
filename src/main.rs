@@ -181,7 +181,7 @@ enum NoteCommand {
     /// Print the Markdown body of a note
     #[command(after_help = fields_help(NOTE_FIELDS))]
     View {
-        /// Note number or URL (https://<team>.kibe.la/notes/<number>)
+        /// Note number, path (/notes/<number>), or URL (https://<team>.kibe.la/notes/<number>)
         #[arg(value_parser = location::note)]
         note: Location,
         /// Team to read from
@@ -204,7 +204,7 @@ enum NoteCommand {
     /// noteTextSelection.startLineInMarkdown is 0-based: it is line N+1 of the body
     /// printed by `kibela note view`.
     Comments {
-        /// Note number or URL (https://<team>.kibe.la/notes/<number>)
+        /// Note number, path (/notes/<number>), or URL (https://<team>.kibe.la/notes/<number>)
         #[arg(value_parser = location::note)]
         note: Location,
         /// Team to read from
