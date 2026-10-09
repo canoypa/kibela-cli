@@ -323,8 +323,17 @@ enum GroupCommand {
 
 #[derive(Subcommand)]
 enum TeamCommand {
-    /// Add a team with its API token, read from standard input; adding it again replaces the token
+    /// Add a team with an access token, read from standard input
+    ///
+    /// Kibela's API needs an access token for each team. Create one at
+    /// https://<team>.kibe.la/settings/access_tokens and give it on standard input; in a
+    /// terminal it is prompted for without echo. The token is checked against the API and
+    /// stored in the OS keychain. Adding a team again replaces its token.
+    #[command(
+        after_help = "EXAMPLES\n  kibela team add example\n  pbpaste | kibela team add example"
+    )]
     Add {
+        /// Team name, as in https://<team>.kibe.la
         #[arg(value_parser = config::parse_team)]
         team: String,
     },
@@ -383,9 +392,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn read_token() -> Result<String, String> {
+fn read_token(team: &str) -> Result<String, String> {
     let token = if io::stdin().is_terminal() {
-        rpassword::prompt_password("Token: ").map_err(|e| e.to_string())?
+        let _ = writeln!(
+            io::stderr(),
+            "kibela reads {team} with an access token. Create one at \
+             https://{team}.kibe.la/settings/access_tokens and paste it here."
+        );
+        rpassword::prompt_password("Access token: ").map_err(|e| e.to_string())?
     } else {
         let mut input = String::new();
         io::stdin()
@@ -652,7 +666,7 @@ fn group_list(team_flag: Option<&str>) -> Result<(), String> {
 }
 
 fn team_add(team: &str) -> Result<(), String> {
-    let token = read_token()?;
+    let token = read_token(team)?;
     let client = api::Client::new(team, &token).map_err(|e| describe(e, team))?;
     let data = match client.query("query { currentUser { account realName } }", json!({})) {
         Ok(data) => data,

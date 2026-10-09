@@ -16,7 +16,7 @@ cargo install --locked --git https://github.com/canoypa/kibela-cli
 
 ## Setup
 
-Add your team (`<team>` in `https://<team>.kibe.la`) with an access token. The token is read from standard input, or prompted for without echo in a terminal:
+Add your team (`<team>` in `https://<team>.kibe.la`) with an access token created at `https://<team>.kibe.la/settings/access_tokens`. The token is read from standard input, or prompted for without echo in a terminal:
 
 ```sh
 kibela team add <team>
