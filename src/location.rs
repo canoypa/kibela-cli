@@ -46,6 +46,57 @@ pub fn folder(arg: &str) -> Result<Location, String> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum GroupKey {
+    Path(String),
+    Name(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub team: Option<String>,
+    pub key: GroupKey,
+}
+
+pub fn group(arg: &str) -> Result<Group, String> {
+    if is_number(arg) {
+        return Ok(Group {
+            team: None,
+            key: GroupKey::Path(format!("/groups/{arg}")),
+        });
+    }
+    let location = if arg.starts_with('/') {
+        from_path(arg)
+    } else if arg.starts_with("https://") {
+        from_url(arg)
+    } else if arg.is_empty() {
+        None
+    } else {
+        return Ok(Group {
+            team: None,
+            key: GroupKey::Name(arg.to_string()),
+        });
+    };
+    match location {
+        Some(location)
+            if location
+                .path
+                .strip_prefix("/groups/")
+                .is_some_and(is_number) =>
+        {
+            Ok(Group {
+                team: location.team,
+                key: GroupKey::Path(location.path),
+            })
+        }
+        _ => Err(
+            "neither a group name, number, path (/groups/<number>), nor a group URL \
+             (https://<team>.kibe.la/groups/<number>)"
+                .to_string(),
+        ),
+    }
+}
+
 fn is_number(arg: &str) -> bool {
     !arg.is_empty() && arg.bytes().all(|b| b.is_ascii_digit())
 }
@@ -127,6 +178,36 @@ mod tests {
             folder("https://example.kibe.la/folders/45?order_by=title&group_id=6"),
             Ok(location(Some("example"), "/folders/45"))
         );
+    }
+
+    #[test]
+    fn group_name_number_path_and_url() {
+        let path = |team: Option<&str>| Group {
+            team: team.map(String::from),
+            key: GroupKey::Path("/groups/6".into()),
+        };
+        assert_eq!(group("6"), Ok(path(None)));
+        assert_eq!(group("/groups/6"), Ok(path(None)));
+        assert_eq!(
+            group("https://example.kibe.la/groups/6?tab=notes"),
+            Ok(path(Some("example")))
+        );
+        assert_eq!(
+            group("Design review"),
+            Ok(Group {
+                team: None,
+                key: GroupKey::Name("Design review".into()),
+            })
+        );
+        for arg in [
+            "",
+            "/groups/abc",
+            "/notes/1",
+            "https://example.kibe.la/notes/1",
+            "https://example.com/groups/6",
+        ] {
+            assert!(group(arg).is_err(), "{arg}");
+        }
     }
 
     #[test]

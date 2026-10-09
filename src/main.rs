@@ -265,9 +265,9 @@ struct Filters {
     /// Only co-edited notes
     #[arg(long)]
     coediting: bool,
-    /// Only results in this group; repeat for more (see `kibela group list`)
-    #[arg(long = "group", value_name = "NAME")]
-    groups: Vec<String>,
+    /// Only results in this group (name, number, path, or URL); repeat for more
+    #[arg(long = "group", value_name = "GROUP", value_parser = location::group)]
+    groups: Vec<location::Group>,
     /// Only results in this folder (as `kibela folder view` takes it); repeat for more
     #[arg(long = "folder", value_name = "FOLDER", value_parser = location::folder)]
     folders: Vec<Location>,
@@ -313,7 +313,7 @@ fn api_enum(value: impl ValueEnum) -> String {
 
 #[derive(Subcommand)]
 enum GroupCommand {
-    /// List groups, archived ones included, as JSON; their names go to `search --group`
+    /// List groups, archived ones included, as JSON; a name or path goes to --group
     List {
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
@@ -492,8 +492,10 @@ fn selection<S: AsRef<str>>(fields: &[S], expansions: &[(&str, &str)]) -> String
     fields.join(" ")
 }
 
-fn single_url_team(locations: &[Location]) -> Result<Option<&str>, String> {
-    let mut teams = locations.iter().filter_map(|l| l.team.as_deref());
+fn single_url_team<'a>(
+    teams: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<Option<&'a str>, String> {
+    let mut teams = teams.into_iter().flatten();
     let first = teams.next();
     match teams.find(|team| Some(*team) != first) {
         Some(other) => Err(format!(
@@ -511,7 +513,10 @@ fn search(
     json: Option<&[String]>,
     filters: &Filters,
 ) -> Result<(), String> {
-    let url_team = single_url_team(&filters.folders)?;
+    let url_team = single_url_team(
+        (filters.folders.iter().map(|f| f.team.as_deref()))
+            .chain(filters.groups.iter().map(|g| g.team.as_deref())),
+    )?;
     let team = Config::load()?.resolve_team(team_flag, url_team)?;
     let client = open_client(&team)?;
     let api_error = |e| describe(e, &team);
@@ -537,7 +542,7 @@ fn search(
         let ids = filters
             .groups
             .iter()
-            .map(|name| lookup::group_id(&groups, name))
+            .map(|group| lookup::group_id(&groups, &group.key))
             .collect::<Result<Vec<_>, _>>()?;
         variables["groupIds"] = json!(ids);
     }
@@ -789,16 +794,9 @@ mod tests {
 
     #[test]
     fn urls_must_share_a_team() {
-        let at = |team: Option<&str>| Location {
-            team: team.map(String::from),
-            path: "/folders/1".into(),
-        };
-        assert_eq!(single_url_team(&[]), Ok(None));
-        assert_eq!(
-            single_url_team(&[at(None), at(Some("a")), at(Some("a"))]),
-            Ok(Some("a"))
-        );
-        assert!(single_url_team(&[at(Some("a")), at(Some("b"))]).is_err());
+        assert_eq!(single_url_team([]), Ok(None));
+        assert_eq!(single_url_team([None, Some("a"), Some("a")]), Ok(Some("a")));
+        assert!(single_url_team([Some("a"), Some("b")]).is_err());
     }
 
     #[test]
