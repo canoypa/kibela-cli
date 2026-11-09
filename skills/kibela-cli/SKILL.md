@@ -21,6 +21,7 @@ kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches wi
 kibela note list [--folder <folder> | --group <group>] [-L <limit>] [--json <fields>]   # notes, as JSON
 kibela note view <note> [--json <fields>]                           # Markdown body of a note
 kibela note comments <note>                                         # comments and inline comments, as JSON
+kibela note attachments <note> [-L <limit>] [--json <fields>]       # attachments of a note, as JSON
 kibela folder search <query>... [-L <limit>] [--json <fields>]      # folders whose names match, as JSON
 kibela folder list [--group <group>] [--root | --parent <folder>] [-L <limit>] [--json <fields>]   # folders, as JSON
 kibela folder view <folder> [-L <limit>] [--json <fields>]          # a folder with its notes and subfolders, as JSON
@@ -52,5 +53,17 @@ To see an image in a note's body, save it to a file and open the file:
 ```sh
 kibela attachment view /attachments/<key> > image.png
 ```
+
+To save every attachment of a note, named by the key the body refers to:
+
+```sh
+kibela note attachments 123 -L 100 --json path,key,name \
+  | jq -r '.nodes[] | [.path, .key, .name] | @tsv' \
+  | while IFS=$'\t' read -r path key name; do
+      kibela attachment view "$path" > "dir/$key.${name##*.}"
+    done
+```
+
+Images the body shows by URL may be missing from `note attachments`; pass the URL to `attachment view`.
 
 `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.

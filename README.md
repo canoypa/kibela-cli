@@ -33,6 +33,7 @@ kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches wi
 kibela note list [--folder <folder> | --group <group>] [-L <limit>] [--json <fields>]   # notes, as JSON
 kibela note view <note> [--json <fields>]                           # Markdown body of a note
 kibela note comments <note>                                         # comments and inline comments, as JSON
+kibela note attachments <note> [-L <limit>] [--json <fields>]       # attachments of a note, as JSON
 kibela folder search <query>... [-L <limit>] [--json <fields>]      # folders whose names match, as JSON
 kibela folder list [--group <group>] [--root | --parent <folder>] [-L <limit>] [--json <fields>]   # folders, as JSON
 kibela folder view <folder> [-L <limit>] [--json <fields>]          # a folder with its notes and subfolders, as JSON
@@ -68,6 +69,7 @@ kibela folder search design
 kibela folder list --group Engineering --root
 kibela folder view https://example.kibe.la/folders/45
 kibela user list --query alice
+kibela note attachments 123
 kibela attachment view /attachments/<key> > image.png
 ```
 

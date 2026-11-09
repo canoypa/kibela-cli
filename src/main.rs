@@ -198,6 +198,20 @@ const ATTACHMENT_FIELDS: &[&str] = &[
     "url",
 ];
 
+/// The attachment fields without `dataUrl`, which holds the whole file in each node.
+const ATTACHMENT_LIST_FIELDS: &[&str] = &[
+    "author",
+    "createdAt",
+    "id",
+    "key",
+    "kind",
+    "mimeType",
+    "name",
+    "path",
+    "size",
+    "url",
+];
+
 const ATTACHMENT_EXPANSIONS: &[(&str, &str)] = &[AUTHOR];
 
 fn fields_help(fields: &[&str]) -> String {
@@ -352,6 +366,36 @@ enum NoteCommand {
         /// Team to read from
         #[arg(long, value_parser = config::parse_team)]
         team: Option<String>,
+    },
+    /// List the attachments of a note as JSON
+    ///
+    /// Prints {"totalCount":N,"nodes":[...]}. When totalCount is larger than the number of
+    /// nodes, raise --limit.
+    #[command(after_help = fields_help(ATTACHMENT_LIST_FIELDS))]
+    Attachments {
+        /// Note number, path (/notes/<number>), or URL (https://<team>.kibe.la/notes/<number>)
+        #[arg(value_parser = location::note)]
+        note: Location,
+        /// Maximum number of attachments
+        #[arg(
+            short = 'L',
+            long,
+            default_value_t = 10,
+            value_parser = clap::value_parser!(u32).range(1..=i64::from(i32::MAX))
+        )]
+        limit: u32,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields [default: path,name]
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(ATTACHMENT_LIST_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
     },
 }
 
@@ -742,6 +786,12 @@ fn main() -> ExitCode {
         Command::Note(NoteCommand::View { note, team, json }) => {
             note_view(note, team.as_deref(), json.as_deref())
         }
+        Command::Note(NoteCommand::Attachments {
+            note,
+            limit,
+            team,
+            json,
+        }) => note_attachments(note, limit, team.as_deref(), json.as_deref()),
         Command::Note(NoteCommand::List {
             folder,
             group,
@@ -1421,6 +1471,36 @@ fn group_list(team_flag: Option<&str>) -> Result<(), String> {
         }
     }
     output(&format!("{groups}\n"))
+}
+
+fn note_attachments(
+    note: Location,
+    limit: u32,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    let team = Config::load()?.resolve_team(team_flag, note.team.as_deref())?;
+    let client = open_client(&team)?;
+    let fields = json.map_or_else(
+        || "path name".to_string(),
+        |fields| selection(fields, ATTACHMENT_EXPANSIONS),
+    );
+    let query = format!(
+        "query($path: String!, $first: Int!) {{ noteFromPath(path: $path) {{ \
+           attachments(first: $first) {{ totalCount nodes {{ {fields} }} }} }} }}"
+    );
+    let not_found = || format!("note {} was not found in {team}", note.path);
+    let data = client
+        .query(&query, json!({ "path": note.path, "first": limit }))
+        .map_err(|e| match e {
+            api::Error::NotFound => not_found(),
+            e => describe(e, &team),
+        })?;
+    let found = &data["noteFromPath"];
+    if found.is_null() {
+        return Err(not_found());
+    }
+    output(&format!("{}\n", found["attachments"]))
 }
 
 fn attachment_view(
