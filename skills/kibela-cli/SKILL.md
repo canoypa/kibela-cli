@@ -34,6 +34,13 @@ kibela team list
 kibela team use <team>
 ```
 
-`<note>` is a note number, a path (`/notes/<number>`), or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. `<group>` is a group name, number, path (`/groups/<number>`), or URL. `<user>` is an account, a path (`/@<account>`), or a user URL. Commands that call the API accept `--team <team>`. `search` filters by `--sort`, `--updated`, `--resource`, `--archived`, `--coediting`, `--group`, `--folder`, `--user`, and `--liker`.
+| Argument | Accepts |
+| --- | --- |
+| `<note>` | number, `/notes/<number>`, or URL |
+| `<folder>` | number, `/folders/<number>`, or URL |
+| `<group>` | name, number, `/groups/<number>`, or URL |
+| `<user>` | account, `/@<account>`, or URL |
+
+Commands that call the API accept `--team <team>`.
 
 `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.
