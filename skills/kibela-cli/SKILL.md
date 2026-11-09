@@ -1,6 +1,6 @@
 ---
 name: kibela-cli
-description: kibela is a CLI for reading Kibela notes (`https://<team>.kibe.la/...`). Use when searching Kibela (by group, folder, author, or date as well), reading or saving a note's Markdown body, reading a note's comments and inline comments, listing the notes of a folder or group, finding or browsing folders, or looking up groups and users.
+description: kibela is a CLI for reading Kibela notes (`https://<team>.kibe.la/...`). Use when searching Kibela (by group, folder, author, or date as well), reading or saving a note's Markdown body, viewing or saving a note's images, reading a note's comments and inline comments, listing the notes of a folder or group, finding or browsing folders, or looking up groups and users.
 ---
 
 # kibela-cli
@@ -21,6 +21,7 @@ kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches wi
 kibela note list [--folder <folder> | --group <group>] [-L <limit>] [--json <fields>]   # notes, as JSON
 kibela note view <note> [--json <fields>]                           # Markdown body of a note
 kibela note comments <note>                                         # comments and inline comments, as JSON
+kibela note attachments <note> [-L <limit>] [--json <fields>]       # attachments of a note, as JSON
 kibela folder search <query>... [-L <limit>] [--json <fields>]      # folders whose names match, as JSON
 kibela folder list [--group <group>] [--root | --parent <folder>] [-L <limit>] [--json <fields>]   # folders, as JSON
 kibela folder view <folder> [-L <limit>] [--json <fields>]          # a folder with its notes and subfolders, as JSON
@@ -28,12 +29,41 @@ kibela user view <user> [--json <fields>]                           # a user, as
 kibela user list [--query <query>] [--group <group>] [-L <limit>] [--json <fields>]   # users, as JSON
 kibela group view <group> [-L <limit>] [--json <fields>]            # a group with its top-level folders and notes, as JSON
 kibela group list                                                   # groups, as JSON
+kibela attachment view <attachment> [--json <fields>]               # the file of an attachment
 kibela team add <team>
 kibela team remove <team>
 kibela team list
 kibela team use <team>
 ```
 
-`<note>` is a note number, a path (`/notes/<number>`), or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. `<group>` is a group name, number, path (`/groups/<number>`), or URL. `<user>` is an account, a path (`/@<account>`), or a user URL. Commands that call the API accept `--team <team>`. `search` filters by `--sort`, `--updated`, `--resource`, `--archived`, `--coediting`, `--group`, `--folder`, `--user`, and `--liker`.
+| Argument | Accepts |
+| --- | --- |
+| `<note>` | number, `/notes/<number>`, or URL |
+| `<folder>` | number, `/folders/<number>`, or URL |
+| `<group>` | name, number, `/groups/<number>`, or URL |
+| `<user>` | account, `/@<account>`, or URL |
+| `<attachment>` | `/attachments/<key>` or URL |
+
+Commands that call the API accept `--team <team>`.
+
+## Attachments
+
+To see an image in a note's body, save it to a file and open the file:
+
+```sh
+kibela attachment view /attachments/<key> > image.png
+```
+
+To save every attachment of a note, named by the key the body refers to:
+
+```sh
+kibela note attachments 123 -L 100 --json path,key,name \
+  | jq -r '.nodes[] | [.path, .key, .name] | @tsv' \
+  | while IFS=$'\t' read -r path key name; do
+      kibela attachment view "$path" > "dir/$key.${name##*.}"
+    done
+```
+
+Images the body shows by URL may be missing from `note attachments`; pass the URL to `attachment view`.
 
 `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.

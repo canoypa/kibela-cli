@@ -1,6 +1,6 @@
 # kibela-cli
 
-Read [Kibela](https://kibe.la/) notes from the command line. `kibela` returns only the parts you ask for — a note's Markdown body, search matches with excerpts, or its comments — so AI agents can pull Kibela content into their context without the rest of the page.
+Read [Kibela](https://kibe.la/) notes from the command line. `kibela` returns only the parts you ask for — a note's Markdown body and images, search matches with excerpts, or its comments — so AI agents can pull Kibela content into their context without the rest of the page.
 
 ## Installation
 
@@ -33,6 +33,7 @@ kibela search <query>... [-L <limit>] [--json <fields>] [filters]   # matches wi
 kibela note list [--folder <folder> | --group <group>] [-L <limit>] [--json <fields>]   # notes, as JSON
 kibela note view <note> [--json <fields>]                           # Markdown body of a note
 kibela note comments <note>                                         # comments and inline comments, as JSON
+kibela note attachments <note> [-L <limit>] [--json <fields>]       # attachments of a note, as JSON
 kibela folder search <query>... [-L <limit>] [--json <fields>]      # folders whose names match, as JSON
 kibela folder list [--group <group>] [--root | --parent <folder>] [-L <limit>] [--json <fields>]   # folders, as JSON
 kibela folder view <folder> [-L <limit>] [--json <fields>]          # a folder with its notes and subfolders, as JSON
@@ -40,13 +41,22 @@ kibela user view <user> [--json <fields>]                           # a user, as
 kibela user list [--query <query>] [--group <group>] [-L <limit>] [--json <fields>]   # users, as JSON
 kibela group view <group> [-L <limit>] [--json <fields>]            # a group with its top-level folders and notes, as JSON
 kibela group list                                                   # groups, as JSON
+kibela attachment view <attachment> [--json <fields>]               # the file of an attachment
 kibela team add <team>
 kibela team remove <team>
 kibela team list
 kibela team use <team>
 ```
 
-`<note>` is a note number, a path (`/notes/<number>`), or a note URL. `<folder>` is a folder number, a path (`/folders/<number>`), or a folder URL. `<group>` is a group name, number, path (`/groups/<number>`), or URL. `<user>` is an account, a path (`/@<account>`), or a user URL. Commands that call the API accept `--team <team>`. `search` filters by `--sort`, `--updated`, `--resource`, `--archived`, `--coediting`, `--group`, `--folder`, `--user`, and `--liker`. `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.
+| Argument | Accepts |
+| --- | --- |
+| `<note>` | number, `/notes/<number>`, or URL |
+| `<folder>` | number, `/folders/<number>`, or URL |
+| `<group>` | name, number, `/groups/<number>`, or URL |
+| `<user>` | account, `/@<account>`, or URL |
+| `<attachment>` | `/attachments/<key>` or URL |
+
+Commands that call the API accept `--team <team>`. `kibela <command> [<subcommand>] --help` describes each command's output and options, including the filters of `search` and the fields `--json` accepts.
 
 ```sh
 kibela search design review -L 5
@@ -59,6 +69,8 @@ kibela folder search design
 kibela folder list --group Engineering --root
 kibela folder view https://example.kibe.la/folders/45
 kibela user list --query alice
+kibela note attachments 123
+kibela attachment view /attachments/<key> > image.png
 ```
 
 ## Output
