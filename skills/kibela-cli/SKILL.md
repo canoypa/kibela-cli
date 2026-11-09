@@ -1,6 +1,6 @@
 ---
 name: kibela-cli
-description: kibela is a CLI for reading Kibela notes (`https://<team>.kibe.la/...`). Use when searching Kibela (by group, folder, author, or date as well), reading or saving a note's Markdown body, reading a note's comments and inline comments, listing the notes of a folder or group, finding or browsing folders, or looking up groups and users.
+description: kibela is a CLI for reading Kibela notes (`https://<team>.kibe.la/...`). Use when searching Kibela (by group, folder, author, or date as well), reading or saving a note's Markdown body, viewing or saving a note's images, reading a note's comments and inline comments, listing the notes of a folder or group, finding or browsing folders, or looking up groups and users.
 ---
 
 # kibela-cli
@@ -28,6 +28,7 @@ kibela user view <user> [--json <fields>]                           # a user, as
 kibela user list [--query <query>] [--group <group>] [-L <limit>] [--json <fields>]   # users, as JSON
 kibela group view <group> [-L <limit>] [--json <fields>]            # a group with its top-level folders and notes, as JSON
 kibela group list                                                   # groups, as JSON
+kibela attachment view <attachment> [--json <fields>]               # the file of an attachment
 kibela team add <team>
 kibela team remove <team>
 kibela team list
@@ -40,7 +41,16 @@ kibela team use <team>
 | `<folder>` | number, `/folders/<number>`, or URL |
 | `<group>` | name, number, `/groups/<number>`, or URL |
 | `<user>` | account, `/@<account>`, or URL |
+| `<attachment>` | `/attachments/<key>` or URL |
 
 Commands that call the API accept `--team <team>`.
+
+## Attachments
+
+To see an image in a note's body, save it to a file and open the file:
+
+```sh
+kibela attachment view /attachments/<key> > image.png
+```
 
 `kibela <command> [<subcommand>] --help` describes each command's output and options and lists the fields `--json` accepts.

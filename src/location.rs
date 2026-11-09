@@ -46,6 +46,30 @@ pub fn folder(arg: &str) -> Result<Location, String> {
     }
 }
 
+pub fn attachment(arg: &str) -> Result<Location, String> {
+    let location = if arg.starts_with('/') {
+        from_path(arg)
+    } else if let Some(path) = arg.strip_prefix("https://kibe.la/") {
+        // Attachment.url has no team in its host.
+        page_path(path).map(|path| Location { team: None, path })
+    } else {
+        from_url(arg)
+    };
+    match location {
+        Some(location)
+            if location
+                .path
+                .strip_prefix("/attachments/")
+                .is_some_and(|key| !key.is_empty() && !key.contains('/')) =>
+        {
+            Ok(location)
+        }
+        _ => {
+            Err("neither an attachment path (/attachments/<key>) nor an attachment URL".to_string())
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum GroupKey {
     Path(String),
@@ -206,6 +230,34 @@ mod tests {
             folder("https://example.kibe.la/folders/45?order_by=title&group_id=6"),
             Ok(location(Some("example"), "/folders/45"))
         );
+    }
+
+    #[test]
+    fn attachment_path_and_url() {
+        let key = "151e902b-8516-4552-a94f-3a53352b8d0e";
+        let path = format!("/attachments/{key}");
+        assert_eq!(attachment(&path), Ok(location(None, &path)));
+        assert_eq!(
+            attachment(&format!("https://example.kibe.la/attachments/{key}?w=200")),
+            Ok(location(Some("example"), &path))
+        );
+        assert_eq!(
+            attachment(&format!("https://kibe.la/attachments/{key}")),
+            Ok(location(None, &path))
+        );
+        for arg in [
+            "",
+            key,
+            "https://kibe.la/notes/1",
+            "/attachments",
+            "/attachments/",
+            "/attachments/a/b",
+            "/notes/1",
+            "https://example.kibe.la/notes/1",
+            "https://example.com/attachments/a",
+        ] {
+            assert!(attachment(arg).is_err(), "{arg}");
+        }
     }
 
     #[test]

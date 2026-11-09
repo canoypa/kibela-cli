@@ -184,6 +184,22 @@ const USER_FIELDS: &[&str] = &[
     "url",
 ];
 
+const ATTACHMENT_FIELDS: &[&str] = &[
+    "author",
+    "createdAt",
+    "dataUrl",
+    "id",
+    "key",
+    "kind",
+    "mimeType",
+    "name",
+    "path",
+    "size",
+    "url",
+];
+
+const ATTACHMENT_EXPANSIONS: &[(&str, &str)] = &[AUTHOR];
+
 fn fields_help(fields: &[&str]) -> String {
     let mut help = String::from("JSON FIELDS");
     let mut line = String::new();
@@ -249,6 +265,9 @@ enum Command {
     /// Read groups
     #[command(subcommand)]
     Group(GroupCommand),
+    /// Read attachments
+    #[command(subcommand)]
+    Attachment(AttachmentCommand),
     /// Manage teams and their API tokens
     #[command(subcommand)]
     Team(TeamCommand),
@@ -540,6 +559,32 @@ fn api_enum(value: impl ValueEnum) -> String {
 }
 
 #[derive(Subcommand)]
+enum AttachmentCommand {
+    /// Print the contents of an attachment
+    ///
+    /// Writes the file to standard output; redirect it to a file. With --json, prints the
+    /// attachment's fields instead.
+    #[command(after_help = fields_help(ATTACHMENT_FIELDS))]
+    View {
+        /// Path (/attachments/<key>) or URL of an attachment
+        #[arg(value_parser = location::attachment)]
+        attachment: Location,
+        /// Team to read from
+        #[arg(long, value_parser = config::parse_team)]
+        team: Option<String>,
+        /// Output JSON with the specified fields
+        #[arg(
+            long,
+            value_name = "FIELDS",
+            value_delimiter = ',',
+            value_parser = PossibleValuesParser::new(ATTACHMENT_FIELDS),
+            hide_possible_values = true
+        )]
+        json: Option<Vec<String>>,
+    },
+}
+
+#[derive(Subcommand)]
 enum UserCommand {
     /// Print a user as JSON
     #[command(after_help = fields_help(USER_FIELDS))]
@@ -785,6 +830,11 @@ fn main() -> ExitCode {
             json,
         }) => group_view(group, limit, team.as_deref(), json.as_deref()),
         Command::Group(GroupCommand::List { team }) => group_list(team.as_deref()),
+        Command::Attachment(AttachmentCommand::View {
+            attachment,
+            team,
+            json,
+        }) => attachment_view(attachment, team.as_deref(), json.as_deref()),
         Command::Team(TeamCommand::Add { team }) => team_add(&team),
         Command::Team(TeamCommand::Remove { team }) => team_remove(&team),
         Command::Team(TeamCommand::List) => team_list(),
@@ -874,11 +924,12 @@ fn report(message: &str) -> Result<(), String> {
 }
 
 fn output(text: &str) -> Result<(), String> {
+    output_bytes(text.as_bytes())
+}
+
+fn output_bytes(bytes: &[u8]) -> Result<(), String> {
     let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
+    match stdout.write_all(bytes).and_then(|()| stdout.flush()) {
         Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e.to_string()),
         _ => Ok(()),
     }
@@ -1372,6 +1423,59 @@ fn group_list(team_flag: Option<&str>) -> Result<(), String> {
     output(&format!("{groups}\n"))
 }
 
+fn attachment_view(
+    attachment: Location,
+    team_flag: Option<&str>,
+    json: Option<&[String]>,
+) -> Result<(), String> {
+    if json.is_none() && io::stdout().is_terminal() {
+        return Err(
+            "the attachment is binary. Redirect standard output to a file, \
+                    or pass --json to print its fields"
+                .into(),
+        );
+    }
+    let team = Config::load()?.resolve_team(team_flag, attachment.team.as_deref())?;
+    let client = open_client(&team)?;
+    let fields = json.map_or_else(
+        || "dataUrl".to_string(),
+        |fields| selection(fields, ATTACHMENT_EXPANSIONS),
+    );
+    let query =
+        format!("query($path: String!) {{ attachmentFromPath(path: $path) {{ {fields} }} }}");
+    let not_found = || format!("attachment {} was not found in {team}", attachment.path);
+    let data = client
+        .query(&query, json!({ "path": attachment.path }))
+        .map_err(|e| match e {
+            api::Error::NotFound => not_found(),
+            e => describe(e, &team),
+        })?;
+    let found = &data["attachmentFromPath"];
+    if found.is_null() {
+        return Err(not_found());
+    }
+    match json {
+        Some(_) => output(&format!("{found}\n")),
+        None => output_bytes(&decode_data_url(
+            found["dataUrl"].as_str().unwrap_or_default(),
+        )?),
+    }
+}
+
+/// The bytes of a base64 data URL (`data:<type>;base64,<data>`), as Attachment.dataUrl has it.
+fn decode_data_url(url: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+
+    let data = url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(','))
+        .and_then(|(meta, data)| meta.ends_with(";base64").then_some(data))
+        .ok_or("the API returned the attachment in an unexpected form")?;
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("cannot decode the attachment: {e}"))
+}
+
 fn team_add(team: &str) -> Result<(), String> {
     let token = read_token(team)?;
     let client = api::Client::new(team, &token).map_err(|e| describe(e, team))?;
@@ -1509,6 +1613,24 @@ mod tests {
         assert_eq!(single_url_team([]), Ok(None));
         assert_eq!(single_url_team([None, Some("a"), Some("a")]), Ok(Some("a")));
         assert!(single_url_team([Some("a"), Some("b")]).is_err());
+    }
+
+    #[test]
+    fn data_urls() {
+        assert_eq!(
+            decode_data_url("data:image/png;base64,iVBORw0KGgo="),
+            Ok(b"\x89PNG\r\n\x1a\n".to_vec())
+        );
+        assert_eq!(decode_data_url("data:text/plain;base64,"), Ok(Vec::new()));
+        for url in [
+            "",
+            "iVBORw0KGgo=",
+            "data:image/png,iVBORw0KGgo=",
+            "data:image/png;base64",
+            "data:image/png;base64,!!!",
+        ] {
+            assert!(decode_data_url(url).is_err(), "{url}");
+        }
     }
 
     #[test]
